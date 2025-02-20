@@ -120,8 +120,11 @@ def batch_loop_dev(
     device = nav_agent.fc1.weight.device
 
     # Deconstruct the batch
-    questions = mini_batch["question"].tolist()
-    answers = mini_batch["answer"].tolist()
+    questions = mini_batch["Question"].tolist()
+    answers = mini_batch["Answer"].tolist()
+    relevant_entities = mini_batch["Relevant-Entities"].tolist()
+    relevant_rels = mini_batch["Relevant-Relations"].tolist()
+    answer_id = mini_batch["Answer-Entity"].tolist()
     question_embeddings = env.get_llm_embeddings(questions, device)
     answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
 
@@ -133,6 +136,9 @@ def batch_loop_dev(
         env,
         question_embeddings,
         answer_ids_padded_tensor,
+        relevant_entities = relevant_entities,
+        relevant_rels = relevant_rels,
+        answer_id = answer_id,
         dev_mode=True,
     )
 
@@ -173,8 +179,11 @@ def batch_loop(
     device = nav_agent.fc1.weight.device
 
     # Deconstruct the batch
-    questions = mini_batch["question"].tolist()
-    answers = mini_batch["answer"].tolist()
+    questions = mini_batch["Question"].tolist()
+    answers = mini_batch["Answer"].tolist()
+    relevant_entities = mini_batch["Relevant-Entities"].tolist()
+    relevant_rels = mini_batch["Relevant-Relations"].tolist()
+    answer_id = mini_batch["Answer-Entity"].tolist()
     logger.debug("About to get llmb embeddings")
     question_embeddings = env.get_llm_embeddings(questions, device)
     logger.debug("About to collate llm embeddings")
@@ -189,6 +198,9 @@ def batch_loop(
         env,
         question_embeddings,
         answer_ids_padded_tensor,
+        relevant_entities = relevant_entities,
+        relevant_rels = relevant_rels,
+        answer_id = answer_id,
     )
 
     ########################################
@@ -302,8 +314,11 @@ def evaluate_training(
         # ):  # We dont want to evaluate on incomplete batches
         #     continue
 
-        current_evaluations["reference_questions"] = mini_batch["question"]
-        current_evaluations["true_answer"] = mini_batch["answer"]
+        current_evaluations["reference_questions"] = mini_batch["Question"]
+        current_evaluations["true_answer"] = mini_batch["Answer"]
+        current_evaluations["relevant_entities"] = mini_batch["Relevant-Entities"]
+        current_evaluations["relevant_relations"] = mini_batch["Relevant-Relations"]
+        current_evaluations["true_answer_id"] = mini_batch["Answer-Entity"]
 
         # Get the Metrics
         bos_token_id = answer_tokenizer.bos_token_id
@@ -467,6 +482,10 @@ def dump_evaluation_metrics(
             questions = evaluation_metrics_dictionary["reference_questions"].iloc[element_id]
             answer = evaluation_metrics_dictionary["true_answer"].iloc[element_id]
 
+            relevant_entities = evaluation_metrics_dictionary["relevant_entities"].iloc[element_id]
+            relevant_rels = evaluation_metrics_dictionary["relevant_relations"].iloc[element_id]
+            answer_id = evaluation_metrics_dictionary["true_answer_id"].iloc[element_id]
+
             # Get the pca of the initial position
             if visualize and initial_pos_flag:
                 initial_pos = kge_prev_pos.cpu().numpy()[0][None, :]
@@ -503,6 +522,29 @@ def dump_evaluation_metrics(
             #     sampled_actions.detach().numpy(),
             # )
 
+            # -----------------------------------
+            'Context Tokens'
+
+            relevant_entities_tokens = [id2entity[index] for index in relevant_entities]
+            log_file.write(f"Relevant Entity Tokens: {relevant_entities_tokens}\n")
+
+            if entity2title:
+                entities_names = [entity2title[index] for index in relevant_entities_tokens]
+                # entities_names = [entity2title[index] if index in entity2title.keys() else '[unknown]' for index in relevant_entities_tokens]
+                log_file.write(f"Relevant Entity Names: {entities_names}\n")
+                wandb_steps.append(" , ".join(entities_names))
+
+            relevant_relations_tokens = [id2relations[int(index)] for index in relevant_rels]
+            log_file.write(f"Relevant Relations Tokens: {relevant_relations_tokens}\n")
+
+            if relation2title: 
+                relations_names = [relation2title[index] for index in relevant_relations_tokens]
+                log_file.write(f"Relevant Relations Names: {relations_names}\n")
+                wandb_steps.append(" -- ".join(relations_names))
+
+            # -----------------------------------
+            'Navigation Agent Tokens'
+
             relations_tokens = [id2relations[int(index)] for index in relation_indices.squeeze()]
             log_file.write(f"Relations Tokens: {relations_tokens}\n")
 
@@ -521,8 +563,10 @@ def dump_evaluation_metrics(
             log_file.write(f"Entity Tokens: {entities_tokens}\n")
 
             if entity2title: 
-                entities_names = [entity2title[index] if index in entity2title.keys() else '[unknown]' for index in entities_tokens]
+                entities_names = [entity2title[index] for index in entities_tokens]
+                # entities_names = [entity2title[index] if index in entity2title.keys() else '[unknown]' for index in entities_tokens]
                 log_file.write(f"Entity Names: {entities_names}\n")
+                wandb_steps.append(" --> ".join(entities_names))
 
             position_distance = []
             for i0 in range(kge_cur_pos.shape[0]):
@@ -951,6 +995,9 @@ def rollout(
     env: ITLGraphEnvironment,
     questions_embeddings: torch.Tensor,
     answers_ids: torch.Tensor,
+    relevant_entities: List[List[int]],
+    relevant_rels: List[List[int]],
+    answer_id: List[int],
     dev_mode: bool = False,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor], Dict[str, Any]]:
     """
@@ -983,7 +1030,7 @@ def rollout(
     # TODO: make sure we keep all seen nodes up to date
 
     # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
-    observations = env.reset(questions_embeddings)
+    observations = env.reset(questions_embeddings, relevant_ent = relevant_entities)
     cur_position, cur_state = observations.position, observations.state
     # Should be of shape (batch_size, 1, hidden_dim)
 
@@ -1057,7 +1104,9 @@ def load_qa_data(
     cached_metadata_path: str,
     raw_QAData_path,
     question_tokenizer_name: str,
-    answer_tokenizer_name: str, 
+    answer_tokenizer_name: str,
+    entity2id: Dict[str, int],
+    relation2id: Dict[str, int], 
     force_recompute: bool = False,
 ):
 
@@ -1093,6 +1142,8 @@ def load_qa_data(
                 cached_metadata_path,
                 question_tokenizer,
                 answer_tokenzier,
+                entity2id,
+                relation2id,
             )
         )
         train_df, dev_df, test_df = df_split.train, df_split.dev, df_split.test
@@ -1130,19 +1181,23 @@ def main():
     # Get the data
     ########################################
     logger.info(":: Setting up the data")
+
+    # Load the dictionaries
+    id2ent, ent2id, id2rel, rel2id =  data_utils.load_dictionaries(args.data_dir)
+
     train_df, dev_df, train_metadata = load_qa_data(
         args.cached_QAMetaData_path,
         args.raw_QAData_path,
         args.question_tokenizer_name,
         args.answer_tokenizer_name,
-        args.force_data_prepro,
+        force_recompute=args.force_data_prepro,
+        entity2id=ent2id,
+        relation2id=rel2id,
     )
     if not isinstance(dev_df, pd.DataFrame) or not isinstance(train_df, pd.DataFrame):
         raise RuntimeError(
             "The data was not loaded properly. Please check the data loading code."
         )
-    # Load the dictionaries
-    id2ent, ent2id, id2rel, rel2id =  data_utils.load_dictionaries(args.data_dir)
 
     # TODO: Muybe ? (They use it themselves)
     # initialize_model_directory(args, args.seed)
@@ -1322,6 +1377,7 @@ def main():
         graph_vis_model_type = args.graph_vis_model,
         graph_points=graph_points,
         graph_annotation=graph_annotation,
+        nav_start_emb_type=args.nav_start_emb_type,
     ).to(args.device)
 
     # Now we load this from the embedding models
