@@ -584,7 +584,7 @@ class ITLKnowledgeGraph(nn.Module):
     def get_centroid(self) -> torch.Tensor:
         return self.centroid
 
-    def get_starting_embedding(self, startType: str = 'centroid', ent_id: int = None)   -> torch.Tensor:
+    def get_starting_embedding(self, startType: str = 'centroid', ent_id: torch.Tensor = None)   -> torch.Tensor:
         """
         Returns the starting point for the navigation.
             
@@ -626,6 +626,7 @@ def sample_random_entity(embeddings: Union[nn.Embedding, nn.Parameter]):
     return sample
 
 def get_embeddings_from_indices(embeddings: Union[nn.Embedding, nn.Parameter], indices: torch.Tensor) -> torch.Tensor:
+    # ! TODO: Check that the indices are mapped correctly
     """
     Given a tensor of indices, returns the embeddings of the corresponding rows.
     

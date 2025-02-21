@@ -43,7 +43,7 @@ from transformers import (
 
 import multihopkg.data_utils as data_utils
 from multihopkg.environments import Observation
-from multihopkg.knowledge_graph import ITLKnowledgeGraph, SunKnowledgeGraph
+from multihopkg.knowledge_graph import ITLKnowledgeGraph, SunKnowledgeGraph, get_embeddings_from_indices
 from multihopkg.language_models import HunchBart, collate_token_ids_batch, GraphEncoder
 from multihopkg.logging import setup_logger
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
@@ -107,6 +107,7 @@ def batch_loop_dev(
     hunch_llm: nn.Module,
     steps_in_episode: int,
     pad_token_id: int,
+    use_path_reward: bool = False,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
     Specifically for computing any extra metrics on the dev set.
@@ -129,7 +130,7 @@ def batch_loop_dev(
     answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
 
     logger.warning(f"About to go into rollout")
-    log_probs, rewards, eval_extras = rollout(
+    log_probs, rewards, path_rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
         hunch_llm,
@@ -139,6 +140,7 @@ def batch_loop_dev(
         relevant_entities = relevant_entities,
         relevant_rels = relevant_rels,
         answer_id = answer_id,
+        calculate_path_reward=use_path_reward,
         dev_mode=True,
     )
 
@@ -154,6 +156,7 @@ def batch_loop_dev(
         not torch.isnan(rewards_t).any() and not torch.isnan(log_probs_t).any()
     ), "NaN detected in the rewards or log probs (batch_loop_dev). Aborting training."
 
+    # ! TODO: Consider using the path reward here
     pg_loss = -1 * rewards_t * log_probs_t
 
     # logger.info(f"Does pg_loss require grad? {pg_loss.requires_grad}")
@@ -170,6 +173,7 @@ def batch_loop(
     bos_token_id: int,
     eos_token_id: int,
     pad_token_id: int,
+    use_path_reward: bool = False,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
 
     ########################################
@@ -191,7 +195,7 @@ def batch_loop(
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
 
     logger.debug("About to rollout")
-    log_probs, rewards, eval_extras = rollout(
+    log_probs, rewards, path_rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
         hunch_llm,
@@ -201,6 +205,7 @@ def batch_loop(
         relevant_entities = relevant_entities,
         relevant_rels = relevant_rels,
         answer_id = answer_id,
+        calculate_path_reward=use_path_reward,
     )
 
     ########################################
@@ -242,6 +247,7 @@ def batch_loop(
     # Normalize the rewards
     # rewards_t = (rewards_t - rewards_t.mean()) / (rewards_t.std() + 1e-8)
 
+    # ! TODO: Consider using the path reward here
     pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
     # TODO: Perhaps only use the first few steps ?
 
@@ -271,7 +277,8 @@ def evaluate_training(
     writer: SummaryWriter,
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
-    wandb_on: bool
+    wandb_on: bool,
+    use_path_reward: bool = False,
 ):
     print("Running evalute_training")
 
@@ -333,6 +340,7 @@ def evaluate_training(
             hunch_llm,
             steps_in_episode,
             pad_token_id,
+            use_path_reward=use_path_reward,
         )
 
         'Extract all the variables from eval_extras'
@@ -692,6 +700,7 @@ def train_multihopkg(
     answer_tokenizer: PreTrainedTokenizer,
     track_gradients: bool,
     wandb_on: bool,
+    use_path_reward: bool = False,
 ):
     # TODO: Get the rollout working
 
@@ -777,6 +786,7 @@ def train_multihopkg(
                     question_tokenizer,
                     answer_tokenizer,
                     wandb_on,
+                    use_path_reward=use_path_reward,
                 )
             logger.debug("Past evaluation")
             ########################################
@@ -791,7 +801,7 @@ def train_multihopkg(
             optimizer.zero_grad()
             logger.debug("About to go into batch loop")
             pg_loss, _ = batch_loop(
-                env, mini_batch, nav_agent, hunch_llm, steps_in_episode, bos_token_id, eos_token_id, pad_token_id
+                env, mini_batch, nav_agent, hunch_llm, steps_in_episode, bos_token_id, eos_token_id, pad_token_id, use_path_reward=use_path_reward,
             )
 
             if torch.isnan(pg_loss).any():
@@ -998,6 +1008,7 @@ def rollout(
     relevant_entities: List[List[int]],
     relevant_rels: List[List[int]],
     answer_id: List[int],
+    calculate_path_reward: bool = False,
     dev_mode: bool = False,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor], Dict[str, Any]]:
     """
@@ -1021,6 +1032,9 @@ def rollout(
     ########################################
     log_action_probs = []
     rewards = []
+    nav_ent_distance = []
+    nav_rel_distance = []
+    nav_answer_distance = []
     eval_metrics = DefaultDict(list)
 
     # Dummy nodes ? TODO: Figur eout what they do.
@@ -1033,6 +1047,25 @@ def rollout(
     observations = env.reset(questions_embeddings, relevant_ent = relevant_entities)
     cur_position, cur_state = observations.position, observations.state
     # Should be of shape (batch_size, 1, hidden_dim)
+
+    if calculate_path_reward:
+        # Calculate embeddings of the relevant entities to be used in the reward function
+        answer_tensor = get_embeddings_from_indices(
+            env.knowledge_graph.sun_model.entity_embedding,
+            torch.tensor(answer_id, dtype=torch.int),
+        ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
+
+        padded_relevant_entities = pad_and_convert_to_tensor(relevant_entities)
+        relevant_embeddings = get_embeddings_from_indices(
+            env.knowledge_graph.sun_model.entity_embedding,
+            padded_relevant_entities,
+            ) # Shape: (batch, num_relevant_entities, embedding_dim)
+
+        padded_relevant_relations = pad_and_convert_to_tensor(relevant_rels)
+        relevant_relations = get_embeddings_from_indices(
+            env.knowledge_graph.sun_model.relation_embedding,
+            padded_relevant_relations,
+            ) # Shape: (batch, num_relevant_relations, embedding_dim)
 
     # pn.initialize_path(kg) # TOREM: Unecessasry to ask pn to form it for us.
     states_so_far = []
@@ -1067,6 +1100,12 @@ def rollout(
 
         rewards.append(llm_rewards)
 
+        if calculate_path_reward:
+            # Navigation Agent Reward
+            nav_ent_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), relevant_embeddings))
+            nav_answer_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), answer_tensor))
+            nav_rel_distance.append(_chamfer_distance_part1(sampled_actions.unsqueeze(1), relevant_relations))
+
         # TODO: Make obseervations not rely on the question
 
         ########################################
@@ -1082,7 +1121,7 @@ def rollout(
             eval_metrics["sampled_actions"].append(sampled_actions)
             eval_metrics["visited_embeddings"].append(visited_embeddings)
             eval_metrics["position_ids"].append(position_ids)
-            eval_metrics["kge_cur_pos"].append(observations.kge_cur_pos)
+            eval_metrics["kge_cur_pos"].append(observations.kge_cur_pos.detach())
             eval_metrics["kge_prev_pos"].append(observations.kge_prev_pos)
             eval_metrics["kge_action"].append(observations.kge_action)
             eval_metrics["hunch_llm_final_guesses"].append(logits.argmax(dim=-1))
@@ -1095,10 +1134,68 @@ def rollout(
     # dev_dictionary["sampled_actions"] = torch.stack(dev_dictionary["sampled_actions"])
     # dev_dictionary["visited_position"] = torch.stack(dev_dictionary["visited_position"])
 
+    path_reward = torch.zeros((questions_embeddings.shape[0], 3)) # Shape: (batch, 3)
+    if calculate_path_reward:
+        # Finish Calculating Chamfer Distance Here
+        nav_ent_distance = torch.stack(nav_ent_distance).permute(1,0,2,3)
+        nav_ent_reward = _chamfer_distance_part2(nav_ent_distance)
+
+        nav_answer_distance = torch.stack(nav_answer_distance).permute(1,0,2,3)
+        nav_answer_reward = _chamfer_distance_part2(nav_answer_distance)
+
+        nav_rel_distance = torch.stack(nav_rel_distance).permute(1,0,2,3)
+        nav_rel_reward = _chamfer_distance_part2(nav_rel_distance)
+
+        path_reward = torch.stack([nav_ent_reward, nav_answer_reward, nav_rel_reward],dim=1) # Shape: (batch, 3)
+
     # Return Rewards of Rollout as a Tensor
+    
+    return log_action_probs, rewards, path_reward, eval_metrics
 
-    return log_action_probs, rewards, eval_metrics
+def chamfer_distance(A, B):
+    """
+    Compute the Chamfer Distance between two sets of vectors.
+    A: (batch, num_vectors_A, vector_dim), in our case (batch, step, embedding_dim) for the visited embeddings
+    B: (batch, num_vectors_B, vector_dim), in our case (batch, num_relevant_entities, embedding_dim) for the relevant embeddings
+    """
+    
+    distances = _chamfer_distance_part1(A, B)
+    
+    # NOTE: torch.min is differiantiable ONLY for the value, NOT the index
 
+    return _chamfer_distance_part2(distances)
+
+def _chamfer_distance_part1(A, B):
+    A = A.unsqueeze(2)  # Shape: (batch, num_vectors_A, 1, vector_dim)
+    B = B.unsqueeze(1)  # Shape: (batch, 1, num_vectors_B, vector_dim)
+
+    # ! TODO: Correct this so that it has a more compatible distance metric for RotatE
+    return torch.norm(A - B, dim=-1)  # Compute pairwise Euclidean distances
+
+def _chamfer_distance_part2(distances):
+    min_A_to_B, _ = torch.min(distances, dim=2)  # For each A, find nearest B
+    min_B_to_A, _ = torch.min(distances, dim=1)  # For each B, find nearest A
+    
+    return min_A_to_B.mean(dim=(1,2)) + min_B_to_A.mean(dim=(1,2))  # Symmetric Chamfer Distance
+    # return min_A_to_B.mean() + min_B_to_A.mean()  # Symmetric Chamfer Distance
+
+def pad_and_convert_to_tensor(array: List[np.ndarray[int]]) -> torch.Tensor:
+    """
+    Given a list of lists of integers, pad the lists to the same length and convert the result to an int torch.Tensor.   
+    """
+    # Step 1: Extract the maximum length between the lists
+    max_length = max(len(sublist) for sublist in array)
+    
+    # Step 2: For each list smaller than this maximum size, reinsert the last element
+    padded_array = np.array([
+        np.pad(sublist, (0, max_length - len(sublist)), 'edge') if len(sublist) < max_length else sublist
+        for sublist in array
+    ])
+    
+    # Step 3: Convert the resulting list of lists into a torch.Tensor
+    tensor_array = torch.tensor(padded_array, dtype=torch.int)
+    
+    return tensor_array
 
 def load_qa_data(
     cached_metadata_path: str,
@@ -1456,6 +1553,7 @@ def main():
         answer_tokenizer=answer_tokenizer,
         track_gradients=args.track_gradients,
         wandb_on=args.wandb,
+        use_path_reward=args.use_path_reward,
     )
     logger.info("Done with everything. Exiting...")
 

@@ -95,6 +95,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/freebaseqa_clean.json", help="Path for precomputed QA knowledge graph data. Precomputing is mostly tokenizaiton.")
     ap.add_argument('--force_data_prepro', '-f', action="store_true", help="Force the data prepro to run even if the data is already cached.")
     ap.add_argument('--nav_start_emb_type', type=str, default="centroid", help="The starting position of the navigator in the graph. Can be 'centroid', 'random', or 'relevant' (default: centroid)")
+    ap.add_argument('--use_path_reward', type=bool, default=False, help="Reward the navigator for taking a relevant path (default: False)")
 
     # Entity and Relationship Human Readability
     ap.add_argument('--node_data_path', type=str, default='./data/FB15k/node_data.csv', help='Path to the CSV file containing the name mapping for the entity.')

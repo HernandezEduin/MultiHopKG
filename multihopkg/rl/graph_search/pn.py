@@ -682,7 +682,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             position=matched_entity_embeddings,
             position_id=corresponding_ent_idxs,
             state=projected_state,
-            kge_cur_pos=self.current_position.detach(),
+            kge_cur_pos=self.current_position, #.detach(), # ! EYE ON THIS, it cannot be detached for the reward calculation
             kge_prev_pos=detached_curpos,
             kge_action=detached_actions,
         )
