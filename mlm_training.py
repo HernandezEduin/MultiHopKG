@@ -311,6 +311,10 @@ def evaluate_training(
         pad_token_id = answer_tokenizer.pad_token_id
         if bos_token_id is None or eos_token_id is None or pad_token_id is None:
             raise ValueError("Assumptions Wrong. The answer_tokenizer must have a bos_token_id, eos_token_id and pad_token_id")
+
+        ########################################
+        # Development/Validation Batch Loop
+        ########################################
         pg_loss, eval_extras = batch_loop_dev(
             env,
             mini_batch,
@@ -527,6 +531,24 @@ def dump_evaluation_metrics(
             position_distance = []
             for i0 in range(kge_cur_pos.shape[0]):
                 position_distance.append(f"{torch.dist(kge_prev_pos[i0], kge_cur_pos[i0]).item():.2e}")
+                logger.info(f"Eucledian Distance between kge_pre_pos[i0] and kge_cur_pos[i0]: {torch.dist(kge_prev_pos[i0], kge_cur_pos[i0]).item():.2e}")
+
+                # Luis:
+                # Divide the entities into imaginary and real parts
+                re_prev, im_prev = torch.chunk(kge_prev_pos[i0], 2)
+                re_cur, im_cur = torch.chunk(kge_cur_pos[i0], 2)
+
+                # Calculate the distance between them 
+                phase_prev = torch.angle(torch.complex(re_prev, im_prev))
+                phase_cur = torch.angle(torch.complex(re_cur, im_cur))
+                phase_diff = phase_cur - phase_prev
+
+                # Optionally wrap within [-pi, pi] for correct interpretation
+                # phase_diff = (phase_diff + torch.pi) % (2 * torch.pi) - torch.pi
+
+                logger.info(f"Phase difference mean between KGE Positions: {phase_diff.mean()} \n")
+                logger.info(f"Phase difference p2 between KGE Positions: {torch.norm(phase_diff, p=2).mean()} \n")
+
 
             log_file.write(f"Distance between KGE Positions: {position_distance} \n")
 
@@ -562,6 +584,9 @@ def dump_evaluation_metrics(
         })
         wandb_table = wandb.Table(dataframe=wandb_df)
         wandb.log({"qa_results": wandb_table})
+
+        # wandb.log({"entropy": wandb.Histogram(evaluation_metrics_dictionary["hunch_llm_entropy"])})
+        wandb.log({"hunchllm/entropy": evaluation_metrics_dictionary["hunch_llm_entropy"].mean().item()})
 
 
     # Save the emebeddings of the current position and the initial position of the agent
@@ -700,7 +725,9 @@ def train_multihopkg(
     ########################################
     # Epoch Loop
     ########################################
+    epoch_times = []
     for epoch_id in tqdm(range(start_epoch, epochs), desc="Epoch"):
+        epoch_start_time = time.time()
 
         logger.info("Epoch {}".format(epoch_id))
         # TODO: Perhaps evaluate the epochs?
