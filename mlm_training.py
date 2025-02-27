@@ -158,6 +158,8 @@ def batch_loop_dev(
 
     # ! TODO: Consider using the path reward here
     pg_loss = -1 * rewards_t * log_probs_t
+    if use_path_reward:
+        pg_loss += -1 * path_rewards.sum(dim=-1).unsqueeze(0)
 
     # logger.info(f"Does pg_loss require grad? {pg_loss.requires_grad}")
 
@@ -250,6 +252,10 @@ def batch_loop(
     # ! TODO: Consider using the path reward here
     pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
     # TODO: Perhaps only use the first few steps ?
+
+    if use_path_reward:
+        pg_loss += -1 * path_rewards.sum(dim=-1).unsqueeze(1) # TOREM: path_rewards is a tensor of shape (batch_size, reward_type)
+        # current rewards types [relevant_node_reward, answer_node_reward, action_reward]
 
     # ! Approach 2: Use the discounted rewards
     # pg_loss = -1 * (discounted_rewards * log_probs_t)
@@ -1129,9 +1135,12 @@ def rollout(
 
         if calculate_path_reward:
             # Navigation Agent Reward
-            nav_ent_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), relevant_embeddings))
-            nav_answer_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), answer_tensor))
+            # nav_ent_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), relevant_embeddings))
+            # nav_answer_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), answer_tensor))
             nav_rel_distance.append(_chamfer_distance_part1(sampled_actions.unsqueeze(1), relevant_relations))
+
+            nav_ent_distance.append(_chamfer_distance_cosine_part1(observations.kge_cur_pos.unsqueeze(1), relevant_embeddings).squeeze(1))
+            nav_answer_distance.append(_chamfer_distance_cosine_part1(observations.kge_cur_pos.unsqueeze(1), answer_tensor).squeeze(1))
 
         # TODO: Make obseervations not rely on the question
 
@@ -1164,11 +1173,17 @@ def rollout(
     path_reward = torch.zeros((questions_embeddings.shape[0], 3)) # Shape: (batch, 3)
     if calculate_path_reward:
         # Finish Calculating Chamfer Distance Here
-        nav_ent_distance = torch.stack(nav_ent_distance).permute(1,0,2,3)
-        nav_ent_reward = _chamfer_distance_part2(nav_ent_distance)
+        # nav_ent_distance = torch.stack(nav_ent_distance).permute(1,0,2,3)
+        # nav_ent_reward = _chamfer_distance_part2(nav_ent_distance)
 
-        nav_answer_distance = torch.stack(nav_answer_distance).permute(1,0,2,3)
-        nav_answer_reward = _chamfer_distance_part2(nav_answer_distance)
+        nav_ent_distance = torch.stack(nav_ent_distance).permute(1,0,2)
+        nav_ent_reward = _chamfer_distance_cosine_part2(nav_ent_distance)
+
+        # nav_answer_distance = torch.stack(nav_answer_distance).permute(1,0,2,3)
+        # nav_answer_reward = _chamfer_distance_part2(nav_answer_distance)
+
+        nav_answer_distance = torch.stack(nav_answer_distance).permute(1,0,2)
+        nav_answer_reward = _chamfer_distance_cosine_part2(nav_answer_distance)
 
         nav_rel_distance = torch.stack(nav_rel_distance).permute(1,0,2,3)
         nav_rel_reward = _chamfer_distance_part2(nav_rel_distance)
@@ -1178,6 +1193,39 @@ def rollout(
     # Return Rewards of Rollout as a Tensor
     
     return log_action_probs, rewards, path_reward, eval_metrics
+
+def chamfer_distance_consine(A: torch.Tensor, B: torch.Tensor):
+    """
+    Compute Chamfer Distance between two sets of complex-valued vectors using Complex Cosine Similarity.
+    A: (batch, num_vectors_A, vector_dim) - tensor where first half of the last dimension is the real part and the second half is the imaginary part
+    B: (batch, num_vectors_B, vector_dim) - tensor where first half of the last dimension is the real part and the second half is the imaginary part
+    """
+    distance_matrix = _chamfer_distance_cosine_part1(A, B)
+
+    return _chamfer_distance_cosine_part2(distance_matrix)
+
+def _chamfer_distance_cosine_part1(A, B):
+    # Convert real-imaginary concatenated format to complex tensor
+    A = torch.complex(*torch.chunk(A, 2, dim=-1)) # Expected shape: (batch, num_vectors_A, vector_dim//2)
+    B = torch.complex(*torch.chunk(B, 2, dim=-1))  # Expected shape: (batch, num_vectors_B, vector_dim//2)
+
+    # Normalize using complex modulus (L2 norm for complex numbers)
+    A_norm = A / (torch.norm(A, p=2, dim=-1, keepdim=True) + 1e-9)  # Expected shape: (batch, num_vectors_A, vector_dim//2)
+    B_norm = B / (torch.norm(B, p=2, dim=-1, keepdim=True) + 1e-9)  # Expected shape: (batch, num_vectors_B, vector_dim//2)
+
+    # Compute Hermitian inner product (cosine similarity in complex space)
+    similarity_matrix = torch.real(torch.matmul(A_norm, B_norm.conj().transpose(1, 2)))  # Re(A * B^H)
+    # Expected shape: (batch, num_vectors_A, num_vectors_B) - Pairwise cosine similarities
+
+    distance_matrix = 1 - similarity_matrix  # Convert similarity to distance
+    return distance_matrix
+
+def _chamfer_distance_cosine_part2(distance_matrix):
+    # Chamfer Distance: Find closest match for each point
+    min_A_to_B, _ = torch.min(distance_matrix, dim=2)  # Expected shape: (batch, num_vectors_A) - Min distance for each A
+    min_B_to_A, _ = torch.min(distance_matrix, dim=1)  # Expected shape: (batch, num_vectors_B) - Min distance for each B
+    return min_A_to_B.mean(dim=-1) + min_B_to_A.mean(dim=-1)  # Symmetric Chamfer Distance
+    # return min_A_to_B.mean() + min_B_to_A.mean()  # Scalar loss value (single float), Symmetric Chamfer Distance
 
 def chamfer_distance(A, B):
     """
