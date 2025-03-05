@@ -593,19 +593,24 @@ def dump_evaluation_metrics(
 
                 # Luis:
                 # Divide the entities into imaginary and real parts
-                re_prev, im_prev = torch.chunk(kge_prev_pos[i0], 2)
-                re_cur, im_cur = torch.chunk(kge_cur_pos[i0], 2)
+                prev_emb = torch.complex(*torch.chunk(kge_prev_pos[i0], 2, dim=-1))
+                cur_emb = torch.complex(*torch.chunk(kge_cur_pos[i0], 2, dim=-1))
+
+                # Compute Hermitian inner product (cosine similarity in complex space)
+                similiarity_score = cosine_similarity(kge_prev_pos[i0], kge_cur_pos[i0])
+                logger.info(f"Cosine Similarity between kge_pre_pos[i0] and kge_cur_pos[i0]: {similiarity_score:.2e}")
+
 
                 # Calculate the distance between them 
-                phase_prev = torch.angle(torch.complex(re_prev, im_prev))
-                phase_cur = torch.angle(torch.complex(re_cur, im_cur))
+                phase_prev = torch.angle(prev_emb)
+                phase_cur = torch.angle(cur_emb)
                 phase_diff = phase_cur - phase_prev
 
                 # Optionally wrap within [-pi, pi] for correct interpretation
                 # phase_diff = (phase_diff + torch.pi) % (2 * torch.pi) - torch.pi
 
-                logger.info(f"Phase difference mean between KGE Positions: {phase_diff.mean()} \n")
-                logger.info(f"Phase difference p2 between KGE Positions: {torch.norm(phase_diff, p=2).mean()} \n")
+                logger.info(f"Phase difference mean between KGE Positions: {phase_diff.mean():.2e} \n")
+                logger.info(f"Phase difference p2 between KGE Positions: {torch.norm(phase_diff, p=2).mean():.2e} \n")
 
 
             log_file.write(f"Distance between KGE Positions: {position_distance} \n")
@@ -1188,11 +1193,30 @@ def rollout(
         nav_rel_distance = torch.stack(nav_rel_distance).permute(1,0,2,3)
         nav_rel_reward = _chamfer_distance_part2(nav_rel_distance)
 
-        path_reward = torch.stack([nav_ent_reward, nav_answer_reward, nav_rel_reward],dim=1) # Shape: (batch, 3)
+        # path_reward = torch.stack([nav_ent_reward, nav_answer_reward, nav_rel_reward],dim=1) # Shape: (batch, 3)
+        path_reward = torch.stack([nav_ent_reward, nav_answer_reward],dim=1) # Shape: (batch, 2)
 
     # Return Rewards of Rollout as a Tensor
     
     return log_action_probs, rewards, path_reward, eval_metrics
+
+def cosine_similarity(A: torch.Tensor, B: torch.Tensor):
+    """
+    Compute cosine similarity between two complex-valued vectors.
+    A, B: (vector_dim,) - tensor where first half of the last dimension is the real part and the second half is the imaginary part
+    """
+    A = torch.complex(*torch.chunk(A, 2))
+    B = torch.complex(*torch.chunk(B, 2))
+
+    # Compute complex modulus (L2 norm) for each vector
+    norm_A = torch.norm(A, p=2)
+    norm_B = torch.norm(B, p=2)
+
+    # Compute Hermitian inner product (dot product with conjugate)
+    inner_product = torch.sum(A * B.conj())
+
+    # Extract real part of similarity
+    return torch.real(inner_product) / (norm_A * norm_B + 1e-9)  # Avoid division by zero
 
 def chamfer_distance_consine(A: torch.Tensor, B: torch.Tensor):
     """
