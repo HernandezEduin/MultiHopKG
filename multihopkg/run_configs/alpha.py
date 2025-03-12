@@ -61,6 +61,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--debug", "-d", action="store_true", help="Debug mode")
     ap.add_argument('--data_dir', type=str, default="./data/FB15k",
                     help='directory where the knowledge graph data is stored (default: None)')
+    # ! TODO: The argument --model is not used in the code. It should be removed. graph_embed_model_name is used instead.
     ap.add_argument('--model', type=str, default='operational_rotate',
                     help='Foundational Operational Model')
     ap.add_argument('--graph_embed_model_name', type=str,default="RotatE",

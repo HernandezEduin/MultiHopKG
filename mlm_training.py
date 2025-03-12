@@ -51,8 +51,11 @@ from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
 from multihopkg.run_configs import alpha
 from multihopkg.utils.convenience import tensor_normalization
 from multihopkg.utils.setup import set_seeds
-from multihopkg.vector_search import ANN_IndexMan
+from multihopkg.vector_search import ANN_IndexMan_pRotatE
 from multihopkg.logs import torch_module_logging
+
+from multihopkg.emb.operations import angular_difference, normalize_angle_smooth
+from multihopkg.emb.operations import _chamfer_distance_part1, _chamfer_distance_part2, _chamfer_distance_cosine_part1, _chamfer_distance_cosine_part2
 
 # PCA
 from sklearn.decomposition import PCA
@@ -285,6 +288,7 @@ def evaluate_training(
     answer_tokenizer: PreTrainedTokenizer,
     wandb_on: bool,
     use_path_reward: bool = False,
+    answer_id: List[int] = None,
 ):
     print("Running evalute_training")
 
@@ -378,7 +382,14 @@ def evaluate_training(
         just_dump_it_here = "./logs/evaluation_dumps.log"
         questions = current_evaluations["reference_questions"]
         answers = current_evaluations["true_answer"]
+
+        answer_tensor = get_embeddings_from_indices(
+            env.knowledge_graph.sun_model.entity_embedding,
+            torch.tensor(answer_id, dtype=torch.int),
+        ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
+
         dump_evaluation_metrics(
+            embedding_range=env.knowledge_graph.sun_model.embedding_range.item(),
             path_to_log=just_dump_it_here,
             evaluation_metrics_dictionary=current_evaluations,
             possible_relation_embeddings=kg.sun_model.relation_embedding,
@@ -398,6 +409,7 @@ def evaluate_training(
             visualize=visualize,
             writer=writer,						  
             wandb_on=wandb_on,
+            answer_tensor=answer_tensor,
         )
         # TODO: Maybe dump the language metrics in wandb ?
         # table = wandb.Table(
@@ -435,10 +447,11 @@ def evaluate_training(
 
 def dump_evaluation_metrics(
     path_to_log: str,
+    embedding_range: float,
     evaluation_metrics_dictionary: Dict[str, Any],
     possible_relation_embeddings: torch.Tensor,
-	vector_entity_searcher: ANN_IndexMan,								  
-    vector_rel_searcher: ANN_IndexMan,
+	vector_entity_searcher: ANN_IndexMan_pRotatE,								  
+    vector_rel_searcher: ANN_IndexMan_pRotatE,
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
     id2entity: Dict[int, str],
@@ -452,6 +465,7 @@ def dump_evaluation_metrics(
     visualize: bool,
     writer: SummaryWriter,
     wandb_on: bool,
+    answer_tensor:torch.Tensor
 ):
     global initial_pos_flag
     global frame_count
@@ -493,8 +507,8 @@ def dump_evaluation_metrics(
             # The main values to work with
             sampled_actions = evaluation_metrics_dictionary["sampled_actions"][:, element_id]
             position_ids = evaluation_metrics_dictionary["position_ids"][:, element_id]
-            kge_cur_pos = evaluation_metrics_dictionary["kge_cur_pos"][:, element_id]
-            kge_prev_pos = evaluation_metrics_dictionary["kge_prev_pos"][:, element_id]
+            kge_cur_pos = evaluation_metrics_dictionary["kge_cur_pos"][:, element_id].cpu()
+            kge_prev_pos = evaluation_metrics_dictionary["kge_prev_pos"][:, element_id].cpu()
             kge_action = evaluation_metrics_dictionary["kge_action"][:, element_id]
             hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"][:, element_id, :]
             questions = evaluation_metrics_dictionary["reference_questions"].iloc[element_id]
@@ -503,11 +517,14 @@ def dump_evaluation_metrics(
             relevant_entities = evaluation_metrics_dictionary["relevant_entities"].iloc[element_id]
             relevant_rels = evaluation_metrics_dictionary["relevant_relations"].iloc[element_id]
             answer_id = evaluation_metrics_dictionary["true_answer_id"].iloc[element_id]
+            ans_emb = answer_tensor[element_id,0].cpu()
 
             # Get the pca of the initial position
             if visualize and initial_pos_flag:
                 initial_pos = kge_prev_pos.cpu().numpy()[0][None, :]
-                initial_pos_complex = initial_pos[:, :1000] + 1j*initial_pos[:, 1000:]
+                assert initial_pos.ndim == 2
+
+                initial_pos_complex = initial_pos[:, :initial_pos.shape[1]//2] + 1j*initial_pos[:, initial_pos.shape[1]//2:]
                 if graph_vis_model_type == "pca":
                     initial_pos_points = graph_vis_model.transform(np.abs(initial_pos_complex))
                 elif graph_vis_model_type == "dist":
@@ -531,6 +548,7 @@ def dump_evaluation_metrics(
             _, relation_indices = vector_rel_searcher.search(kge_action, 1)
             entity_emb, entity_indices = vector_entity_searcher.search(kge_cur_pos, 1)
             prev_emb, start_index = vector_entity_searcher.search(kge_prev_pos.detach().cpu(), 1)
+            # answer_emb, answer_indices = vector_entity_searcher.search(answer_tensor.squeeze(1).cpu().numpy(), 1)
 
             # combine index of start_index with the rest of entity_indices into pos_ids
             pos_ids = np.concatenate((start_index[0][:, None], entity_indices), axis=0)
@@ -548,7 +566,6 @@ def dump_evaluation_metrics(
 
             if entity2title:
                 entities_names = [entity2title[index] for index in relevant_entities_tokens]
-                # entities_names = [entity2title[index] if index in entity2title.keys() else '[unknown]' for index in relevant_entities_tokens]
                 log_file.write(f"Relevant Entity Names: {entities_names}\n")
                 wandb_steps.append(" , ".join(entities_names))
 
@@ -571,59 +588,72 @@ def dump_evaluation_metrics(
                 log_file.write(f"Relations Names: {relations_names}\n")
                 wandb_steps.append(" -- ".join(relations_names))
 
-            action_distance = []
-            for i0 in range(kge_action.shape[0] -1 ):
-                action_distance.append(f"{torch.dist(kge_action.detach().cpu()[i0], torch.tensor(kge_action[i0+1]).cpu()).item():.2e}")
-            
-            log_file.write(f"Distance between KGE Actions: {action_distance} \n")
-
             entities_tokens = [id2entity[index] for index in pos_ids.squeeze()]
             log_file.write(f"Entity Tokens: {entities_tokens}\n")
 
             if entity2title: 
                 entities_names = [entity2title[index] for index in entities_tokens]
-                # entities_names = [entity2title[index] if index in entity2title.keys() else '[unknown]' for index in entities_tokens]
                 log_file.write(f"Entity Names: {entities_names}\n")
                 wandb_steps.append(" --> ".join(entities_names))
 
+            # -----------------------------------
+            'Navigation Agent Distance Metrics'
+
+            action_distance = []
+            for i0 in range(kge_action.shape[0]):
+                angle = kge_action[i0].cpu()/(embedding_range/torch.pi)
+                action_distance.append(f"{(180/torch.pi)*normalize_angle_smooth(angle).abs().sum().item():.2e}") # calculates how much rotation was done
+            
+            log_file.write(f"Current Total Absolute Rotation (deg):\n {action_distance} \n")
+            # logger.info(f"Current Total Absolute Rotation (deg): {action_distance} \n")
+
+            # TODO: Add distance of current location to the answer entity
+
             position_distance = []
+            position_distance_avg = []
+            position_distance_ans = []
+            closest_emb_distance = []
+            # This results should match action distance for pRotatE, otherwise something is wrong, sort of a sanity check
             for i0 in range(kge_cur_pos.shape[0]):
-                position_distance.append(f"{torch.dist(kge_prev_pos[i0], kge_cur_pos[i0]).item():.2e}")
-                logger.info(f"Eucledian Distance between kge_pre_pos[i0] and kge_cur_pos[i0]: {torch.dist(kge_prev_pos[i0], kge_cur_pos[i0]).item():.2e}")
+                diff = angular_difference(kge_cur_pos[i0]/(embedding_range/torch.pi), kge_prev_pos[i0]/(embedding_range/torch.pi), smooth=True)
+                rotational_total = (180/torch.pi)*(diff.sum().item())
+                rotational_avg = (180/torch.pi)*(diff.mean().item())
 
-                # Luis:
-                # Divide the entities into imaginary and real parts
-                prev_emb = torch.complex(*torch.chunk(kge_prev_pos[i0], 2, dim=-1))
-                cur_emb = torch.complex(*torch.chunk(kge_cur_pos[i0], 2, dim=-1))
+                diff_ans = angular_difference(kge_cur_pos[i0]/(embedding_range/torch.pi), ans_emb/(embedding_range/torch.pi), smooth=True)
+                rotation_to_answer = (180/torch.pi)*(diff_ans.mean().item())
 
-                # Compute Hermitian inner product (cosine similarity in complex space)
-                similiarity_score = cosine_similarity(kge_prev_pos[i0], kge_cur_pos[i0])
-                logger.info(f"Cosine Similarity between kge_pre_pos[i0] and kge_cur_pos[i0]: {similiarity_score:.2e}")
+                diff_closest = angular_difference(kge_cur_pos[i0]/(embedding_range/torch.pi), entity_emb[i0]/(embedding_range/torch.pi), smooth=True)
+                rotation_to_closest = (180/torch.pi)*(diff_closest.mean().item())
 
-
-                # Calculate the distance between them 
-                phase_prev = torch.angle(prev_emb)
-                phase_cur = torch.angle(cur_emb)
-                phase_diff = phase_cur - phase_prev
-
-                # Optionally wrap within [-pi, pi] for correct interpretation
-                # phase_diff = (phase_diff + torch.pi) % (2 * torch.pi) - torch.pi
-
-                logger.info(f"Phase difference mean between KGE Positions: {phase_diff.mean():.2e} \n")
-                logger.info(f"Phase difference p2 between KGE Positions: {torch.norm(phase_diff, p=2).mean():.2e} \n")
+                position_distance.append(f"{rotational_total:.2e}")
+                position_distance_avg.append(f"{rotational_avg:.2e}")
+                position_distance_ans.append(f"{rotation_to_answer:.2e}")
+                closest_emb_distance.append(f"{rotation_to_closest:.2e}")
 
 
-            log_file.write(f"Distance between KGE Positions: {position_distance} \n")
+            log_file.write(f"Rotation between KGE Positions (abs total in deg):\n {position_distance} \n")
+            # logger.info(f"Rotation between KGE Positions (abs total): {position_distance} \n")
 
-            closest_distance = []
-            for i0 in range(kge_cur_pos.shape[0]):
-                closest_distance.append(f"{torch.dist(kge_cur_pos[i0].cpu(), torch.tensor(entity_emb[i0]).cpu()).item():.2e}")
+            log_file.write(f"Rotation between KGE Positions (abs avg in deg):\n {position_distance_avg} \n")
+            # logger.info(f"Rotation between KGE Positions (abs avg): {position_distance_avg} \n")
 
-            log_file.write(f"Distance between KGE Current Positions & Closest Entity: {closest_distance} \n")
+            log_file.write(f"Rotation between Current KGE and Answer (abs avg in deg):\n {position_distance_ans} \n")
+            # logger.info(f"Rotation between KGE Positions (abs total to answer): {position_distance_ans} \n")
 
-            start_distance = f"{torch.dist(kge_prev_pos[0].cpu(), torch.tensor(prev_emb[0]).cpu()).item():.2e}"
+            log_file.write(f"Rotation between Current KGE Positions and Closest Entity (abs avg in deg):\n {closest_emb_distance} \n")
+            # logger.info(f"Rotation between KGE Positions (abs total to closest entity): {closest_emb_distance} \n")
 
-            log_file.write(f"Distance between KGE Start Position & Closest Entity: {start_distance} \n")
+            wandb_positions.append(" --> ".join(position_distance))
+
+            # closest_distance = []
+            # for i0 in range(kge_cur_pos.shape[0]):
+            #     closest_distance.append(f"{torch.dist(kge_cur_pos[i0].cpu(), torch.tensor(entity_emb[i0]).cpu()).item():.2e}")
+
+            # log_file.write(f"Distance between KGE Current Positions & Closest Entity: {closest_distance} \n")
+
+            # start_distance = f"{torch.dist(kge_prev_pos[0].cpu(), torch.tensor(prev_emb[0]).cpu()).item():.2e}"
+
+            # log_file.write(f"Distance between KGE Start Position & Closest Entity: {start_distance} \n")
 
             # Craft the string for the final final output
             final_str_output = ""
@@ -654,9 +684,12 @@ def dump_evaluation_metrics(
 
     # Save the emebeddings of the current position and the initial position of the agent
     if visualize:
+        # * current position of the agent on the graph
         cur_pos = kge_cur_pos.cpu().numpy()
-        cur_pos_complex = cur_pos[:, :1000] + 1j*cur_pos[:, 1000:]
-        closest_entities_complex = entity_emb[:, :1000] + 1j*entity_emb[:, 1000:]
+        cur_pos_complex = cur_pos[:, :cur_pos.shape[1]//2] + 1j*cur_pos[:, cur_pos.shape[1]//2:]
+
+        # * closest entities (nodes) to a current position of the agent
+        closest_entities_complex = entity_emb[:, :entity_emb.shape[1]//2] + 1j*entity_emb[:, entity_emb.shape[1]//2:]
 
         if graph_vis_model_type == "pca":
             cur_pos_points = graph_vis_model.transform(np.abs(cur_pos_complex))
@@ -698,6 +731,49 @@ def dump_evaluation_metrics(
                                         writer=writer, 
                                         frame_count=frame_count)
                 frame_count += 1
+        elif graph_vis_model_type == "phase_diff":
+            for cur_pos_id in range(cur_pos_complex.shape[0]):
+                # initial_pos_points = complex_distance(initial_pos_complex, cur_pos_complex[cur_pos_id], distance_metric=l2_distance)
+                # cur_pos_points = complex_distance(cur_pos_complex[cur_pos_id][:, None], cur_pos_complex[cur_pos_id][:, None], distance_metric=l2_distance)
+                # closest_entities_points = complex_distance(closest_entities_complex, cur_pos_complex[cur_pos_id], distance_metric=l2_distance)
+                # answer
+                # questions
+
+                # TODO: add | remove when done
+                # initial position, current position, closest entity position
+                # ? is it worth adding actions
+
+                # TODO: checklist | Do not remove
+                # current positoin added: cur_pos_complex -> shape [3, 1000]
+                # closest eneities added: closest_entities_complex -> shape [3, 1000]
+                # initial position added: closest_entities_complex -> shape [1, 1000]
+
+                # TODO: check their shapes | remove when done
+                # print(cur_pos_complex.shape)
+                # print(closest_entities_complex.shape)
+                # print(initial_pos_complex.shape)
+                # print()
+
+                xlabel="Features" 
+                ylabel="Phase (deg)"
+
+                # * use get_phase to get phase of embeddings in radiants or degrees
+
+                # * plot embeddings on the 2D surface
+                # y-axis phase
+                # x-axis feature
+                write_2d_graph_displacement(data=[cur_pos_points, initial_pos_points, closest_entities_points], 
+                                        label=["Current Pos", "Initial Pos", "Closest Entities"], 
+                                        color=['b', 'g', 'r', 'y'], 
+                                        alpha=[0.4, 0.4, 0.8, 0.8], 
+                                        marker=['o', 's', '^', 'x'], 
+                                        title=f"Visualization of Graph and Positions | Cur Pos {cur_pos_id}\nEvaluation for the last Question", 
+                                        xlabel=xlabel, 
+                                        ylabel=ylabel,
+                                        annotation=graph_annotation,
+                                        writer=writer, 
+                                        frame_count=frame_count)
+                frame_count += 1
 
         visualization_flag = False
 
@@ -716,6 +792,20 @@ def l1_distance(x1: np.ndarray, x2: np.ndarray):
 def complex_distance(x1: np.ndarray, x2: np.ndarray = None, distance_metric = l1_distance):
     if isinstance(x2, type(None)): x2 = np.zeros_like(x1)
     return np.concat([distance_metric(x1.real, x2.real)[:, None], distance_metric(x1.imag, x2.imag)[:, None]], axis=1)
+
+def get_phase(x, metric="degree"):
+    # check if x is a complex valued array
+    assert np.iscomplexobj(x), "Array does not contain only complex values"
+
+    phase = np.angle(x)
+    if metric == "degree":
+        phase = np.rad2deg(phase)
+        return phase
+    elif metric == "radian":
+        return phase
+    else:
+        print("Wrong metrics!")
+    
 
 def train_multihopkg(
     batch_size: int,
@@ -809,7 +899,14 @@ def train_multihopkg(
             ########################################
             # Evaluation
             ########################################
+            mini_batch = train_data[sample_offset_idx : sample_offset_idx + batch_size]
+            # pdb.set_trace()
+            assert isinstance(
+                mini_batch, pd.DataFrame
+            )  # For the lsp to give me a break
+
             if batch_count % mbatches_b4_eval == 0:
+                answer_id = mini_batch["Answer-Entity"].tolist()  # Extract answer_id from mini_batch
                 evaluate_training(
                     env,
                     dev_df,
@@ -825,17 +922,13 @@ def train_multihopkg(
                     answer_tokenizer,
                     wandb_on,
                     use_path_reward=use_path_reward,
+                    answer_id=answer_id,
                 )
             logger.debug("Past evaluation")
             ########################################
             # Training
             ########################################
             logger.debug("Getting some train data")
-            mini_batch = train_data[sample_offset_idx : sample_offset_idx + batch_size]
-            # pdb.set_trace()
-            assert isinstance(
-                mini_batch, pd.DataFrame
-            )  # For the lsp to give me a break
             optimizer.zero_grad()
             logger.debug("About to go into batch loop")
             pg_loss, _ = batch_loop(
@@ -1118,8 +1211,8 @@ def rollout(
         # Ah ssampled_actions are the ones that have to go against the knowlde garph.
 
         states = observations.state
-        visited_embeddings = torch.from_numpy(observations.position)
-        position_ids = torch.from_numpy(observations.position_id)
+        visited_embeddings = observations.position.clone()
+        position_ids = observations.position_id.clone()
         # For now, we use states given by the path encoder and positions mostly for debugging
         states_so_far.append(states)
 
@@ -1199,84 +1292,6 @@ def rollout(
     # Return Rewards of Rollout as a Tensor
     
     return log_action_probs, rewards, path_reward, eval_metrics
-
-def cosine_similarity(A: torch.Tensor, B: torch.Tensor):
-    """
-    Compute cosine similarity between two complex-valued vectors.
-    A, B: (vector_dim,) - tensor where first half of the last dimension is the real part and the second half is the imaginary part
-    """
-    A = torch.complex(*torch.chunk(A, 2))
-    B = torch.complex(*torch.chunk(B, 2))
-
-    # Compute complex modulus (L2 norm) for each vector
-    norm_A = torch.norm(A, p=2)
-    norm_B = torch.norm(B, p=2)
-
-    # Compute Hermitian inner product (dot product with conjugate)
-    inner_product = torch.sum(A * B.conj())
-
-    # Extract real part of similarity
-    return torch.real(inner_product) / (norm_A * norm_B + 1e-9)  # Avoid division by zero
-
-def chamfer_distance_consine(A: torch.Tensor, B: torch.Tensor):
-    """
-    Compute Chamfer Distance between two sets of complex-valued vectors using Complex Cosine Similarity.
-    A: (batch, num_vectors_A, vector_dim) - tensor where first half of the last dimension is the real part and the second half is the imaginary part
-    B: (batch, num_vectors_B, vector_dim) - tensor where first half of the last dimension is the real part and the second half is the imaginary part
-    """
-    distance_matrix = _chamfer_distance_cosine_part1(A, B)
-
-    return _chamfer_distance_cosine_part2(distance_matrix)
-
-def _chamfer_distance_cosine_part1(A, B):
-    # Convert real-imaginary concatenated format to complex tensor
-    A = torch.complex(*torch.chunk(A, 2, dim=-1)) # Expected shape: (batch, num_vectors_A, vector_dim//2)
-    B = torch.complex(*torch.chunk(B, 2, dim=-1))  # Expected shape: (batch, num_vectors_B, vector_dim//2)
-
-    # Normalize using complex modulus (L2 norm for complex numbers)
-    A_norm = A / (torch.norm(A, p=2, dim=-1, keepdim=True) + 1e-9)  # Expected shape: (batch, num_vectors_A, vector_dim//2)
-    B_norm = B / (torch.norm(B, p=2, dim=-1, keepdim=True) + 1e-9)  # Expected shape: (batch, num_vectors_B, vector_dim//2)
-
-    # Compute Hermitian inner product (cosine similarity in complex space)
-    similarity_matrix = torch.real(torch.matmul(A_norm, B_norm.conj().transpose(1, 2)))  # Re(A * B^H)
-    # Expected shape: (batch, num_vectors_A, num_vectors_B) - Pairwise cosine similarities
-
-    distance_matrix = 1 - similarity_matrix  # Convert similarity to distance
-    return distance_matrix
-
-def _chamfer_distance_cosine_part2(distance_matrix):
-    # Chamfer Distance: Find closest match for each point
-    min_A_to_B, _ = torch.min(distance_matrix, dim=2)  # Expected shape: (batch, num_vectors_A) - Min distance for each A
-    min_B_to_A, _ = torch.min(distance_matrix, dim=1)  # Expected shape: (batch, num_vectors_B) - Min distance for each B
-    return min_A_to_B.mean(dim=-1) + min_B_to_A.mean(dim=-1)  # Symmetric Chamfer Distance
-    # return min_A_to_B.mean() + min_B_to_A.mean()  # Scalar loss value (single float), Symmetric Chamfer Distance
-
-def chamfer_distance(A, B):
-    """
-    Compute the Chamfer Distance between two sets of vectors.
-    A: (batch, num_vectors_A, vector_dim), in our case (batch, step, embedding_dim) for the visited embeddings
-    B: (batch, num_vectors_B, vector_dim), in our case (batch, num_relevant_entities, embedding_dim) for the relevant embeddings
-    """
-    
-    distances = _chamfer_distance_part1(A, B)
-    
-    # NOTE: torch.min is differiantiable ONLY for the value, NOT the index
-
-    return _chamfer_distance_part2(distances)
-
-def _chamfer_distance_part1(A, B):
-    A = A.unsqueeze(2)  # Shape: (batch, num_vectors_A, 1, vector_dim)
-    B = B.unsqueeze(1)  # Shape: (batch, 1, num_vectors_B, vector_dim)
-
-    # ! TODO: Correct this so that it has a more compatible distance metric for RotatE
-    return torch.norm(A - B, dim=-1)  # Compute pairwise Euclidean distances
-
-def _chamfer_distance_part2(distances):
-    min_A_to_B, _ = torch.min(distances, dim=2)  # For each A, find nearest B
-    min_B_to_A, _ = torch.min(distances, dim=1)  # For each B, find nearest A
-    
-    return min_A_to_B.mean(dim=(1,2)) + min_B_to_A.mean(dim=(1,2))  # Symmetric Chamfer Distance
-    # return min_A_to_B.mean() + min_B_to_A.mean()  # Symmetric Chamfer Distance
 
 def pad_and_convert_to_tensor(array: List[np.ndarray[int]]) -> torch.Tensor:
     """
@@ -1428,7 +1443,6 @@ def main():
     # Information computed by knowldege graph for future dependency injection
     dim_entity = knowledge_graph.get_entity_dim()
     dim_relation = knowledge_graph.get_relation_dim()
-    logger.info("You have reached the exit")
 
     # Paths for triples
     train_triplets_path = os.path.join(args.data_dir, "train.triples")
@@ -1448,15 +1462,17 @@ def main():
     ########################################
     # ! Currently using approximations, check if it this is the best way to go
     # ! Testing: exact computation
-    ann_index_manager_ent = ANN_IndexMan(
+    ann_index_manager_ent = ANN_IndexMan_pRotatE(
         knowledge_graph.get_all_entity_embeddings_wo_dropout(),
-        exact_computation=True,
-        nlist=100,
+        embedding_range=knowledge_graph.sun_model.embedding_range.item(),
+        # exact_computation=True,
+        # nlist=100,
     )
-    ann_index_manager_rel = ANN_IndexMan(
+    ann_index_manager_rel = ANN_IndexMan_pRotatE(
         knowledge_graph.get_all_relations_embeddings_wo_dropout(),
-        exact_computation=True,
-        nlist=100,
+        embedding_range=knowledge_graph.sun_model.embedding_range.item(),
+        # exact_computation=True,
+        # nlist=100,
     )
 
     graph_points = None
@@ -1475,6 +1491,8 @@ def main():
             graph_vis_model = pca
         elif args.graph_vis_model == 'dist':
             # graph_points = complex_distance(graph_emb_complex, distance_metric=l1_distance)
+            graph_points = graph_emb_complex.copy()
+        elif args.graph_vis_model == 'phase_diff':
             graph_points = graph_emb_complex.copy()
         else:
             assert False, f"Error! The visualization model {args.graph_vis_model} is not available!"

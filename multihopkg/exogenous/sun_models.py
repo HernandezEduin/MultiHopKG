@@ -460,22 +460,28 @@ class KGEModel(nn.Module):
         return torch.cat([re_est_tail, im_est_tail], dim=-1)
     
     def flexible_forward_protate(
-        self, cur_states: torch.Tensor, cur_actions: torch.Tensor, angle_input: bool = False 
+        self, cur_states: torch.Tensor, cur_actions: torch.Tensor, angle_input: bool = True 
     ) -> torch.Tensor:
         """
         Applies a phase rotation to the head entity given the relation. 
         This is meant to work on the original RotatE model.
         """
         if angle_input:
+            # for pRotatE
             head_rad = cur_states/(self.embedding_range.item()/torch.pi)
         else:
+            # for RotatE, assuming per feature magnitudes are normalized
             head = torch.complex(*torch.chunk(cur_states, 2, dim=-1))   # head is a complex number
             head_rad = torch.angle(head)                                # angles are represented in radians
             head_mag = torch.abs(head)
         
         relation = cur_actions
         
-        rotation_rad = self.pRotatE_Eval(head_rad, relation)        # apply the phase rotation, result in rads   
+        rotation_rad = self.pRotatE_Eval(head_rad, relation)        # apply the phase rotation, result in rads
+
+        # TODO: VERY IMPORTANT: Verify if this doesn't break the learning process
+        # ! Observation: If there is no normalization, there is NaN somewhere in the log_prob or rewards
+        rotation_rad = torch.atan2(torch.sin(rotation_rad), torch.cos(rotation_rad)) # normalize the angle to [-pi, pi] since it is cyclic
         
         if angle_input:
             return rotation_rad * (self.embedding_range.item()/torch.pi)

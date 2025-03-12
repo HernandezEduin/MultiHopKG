@@ -633,7 +633,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # ! Restraining the movement to the neighborhood
 
-        self.current_position = self.knowledge_graph.sun_model.flexible_forward_rotate(
+        # ! TODO: Make the type of rotate used a parameter, stick to protate for now
+        self.current_position = self.knowledge_graph.sun_model.flexible_forward_protate(
             self.current_position, actions, 
         )
 
