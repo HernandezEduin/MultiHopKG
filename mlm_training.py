@@ -217,23 +217,23 @@ def batch_loop(
     ########################################
     # Compute policy gradient
     logger.debug("About to calculate rewards")
-    rewards_t = (
+    llm_rewards_t = (
         torch.stack(llm_rewards)
     ).permute(1,0,2)  # TODO: I think I need to add the gamma here
     # Get only masked, then mean
-    rewards_t_unpacked = []
-    for i, reward_batch_element in enumerate(rewards_t):
+    llm_rewards_t_unpacked = []
+    for i, reward_batch_element in enumerate(llm_rewards_t):
         mask_for_element = pad_mask[i][1:].unsqueeze(0).repeat(steps_in_episode,1)
         filtered_rewards = reward_batch_element[mask_for_element].reshape(steps_in_episode, -1)
         mean_reward = torch.mean(filtered_rewards, dim=-1)
-        rewards_t_unpacked.append(mean_reward)
-    rewards_t = torch.stack(rewards_t_unpacked)
+        llm_rewards_t_unpacked.append(mean_reward)
+    llm_rewards_t = torch.stack(llm_rewards_t_unpacked)
 
     log_probs_t = torch.stack(log_probs).T
     num_steps = log_probs_t.shape[-1]
 
     # TODO: Check if this is not bad. 
-    rewards_t = rewards_t.expand_as(log_probs_t) # TOREM: This is a hack to make the shapes match
+    llm_rewards_t = llm_rewards_t.expand_as(log_probs_t) # TOREM: This is a hack to make the shapes match
 
     kg_rewards_t = (
         torch.stack(kg_rewards)
@@ -246,10 +246,10 @@ def batch_loop(
 
     # ! Approach 2: Use the discounted rewards
     gamma = nav_agent.gamma
-    discounted_rewards = torch.zeros_like(rewards_t.clone()).to(rewards_t.device) # Shape: (batch_size, num_steps)
-    discounted_rewards[:,-1] = rewards_t[:,-1] + kg_rewards_t[:,-1]
+    discounted_rewards = torch.zeros_like(llm_rewards_t.clone()).to(llm_rewards_t.device) # Shape: (batch_size, num_steps)
+    discounted_rewards[:,-1] = llm_rewards_t[:,-1] + kg_rewards_t[:,-1]
     for t in reversed(range(num_steps - 1)):
-        discounted_rewards[:,t] += gamma * (rewards_t[:,t + 1] + kg_rewards_t[:,t + 1])
+        discounted_rewards[:,t] += gamma * (llm_rewards_t[:,t + 1] + kg_rewards_t[:,t + 1])
 
     # Sample-wise normalization of the rewards for stability
     discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
