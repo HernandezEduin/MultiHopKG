@@ -651,9 +651,6 @@ def dump_evaluation_metrics(
                 action_distance.append(f"{(180/torch.pi)*normalize_angle_smooth(angle).abs().sum().item():.2e}") # calculates how much rotation was done
             
             log_file.write(f"Current Total Absolute Rotation (deg):\n {action_distance} \n")
-            # logger.info(f"Current Total Absolute Rotation (deg): {action_distance} \n")
-
-            # TODO: Add distance of current location to the answer entity
 
             position_distance = []
             position_distance_avg = []
@@ -678,31 +675,14 @@ def dump_evaluation_metrics(
 
 
             log_file.write(f"Rotation between KGE Positions (abs total in deg):\n {position_distance} \n")
-            # logger.info(f"Rotation between KGE Positions (abs total): {position_distance} \n")
 
             log_file.write(f"Rotation between KGE Positions (abs avg in deg):\n {position_distance_avg} \n")
-            # logger.info(f"Rotation between KGE Positions (abs avg): {position_distance_avg} \n")
 
             log_file.write(f"Rotation between Current KGE and Answer (abs avg in deg):\n {position_distance_ans} \n")
-            # logger.info(f"Rotation between KGE Positions (abs total to answer): {position_distance_ans} \n")
 
             log_file.write(f"Rotation between Current KGE Positions and Closest Entity (abs avg in deg):\n {closest_emb_distance} \n")
-            # logger.info(f"Rotation between KGE Positions (abs total to closest entity): {closest_emb_distance} \n")
 
             wandb_positions.append(" --> ".join(position_distance))
-
-            # closest_distance = []
-            # for i0 in range(kge_cur_pos.shape[0]):
-            #     closest_distance.append(f"{torch.dist(kge_cur_pos[i0].cpu(), torch.tensor(entity_emb[i0]).cpu()).item():.2e}")
-
-            # log_file.write(f"Distance between KGE Current Positions & Closest Entity: {closest_distance} \n")
-
-            # start_distance = f"{torch.dist(kge_prev_pos[0].cpu(), torch.tensor(prev_emb[0]).cpu()).item():.2e}"
-
-            # log_file.write(f"Distance between KGE Start Position & Closest Entity: {start_distance} \n")
-
-            # Craft the string for the final final output
-            final_str_output = ""
 
             # We will write predicted_answer into a wandb table:
             if wandb_on:
