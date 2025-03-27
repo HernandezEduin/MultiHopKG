@@ -19,6 +19,7 @@ from multihopkg.utils.ops import var_cuda, zeros_var_cuda
 from multihopkg.knowledge_graph import ITLKnowledgeGraph, SunKnowledgeGraph
 from multihopkg.vector_search import ANN_IndexMan
 from multihopkg.environments import Environment, Observation
+from multihopkg.emb.operations import angular_difference
 from typing import Tuple, List, Optional
 import pdb
 
@@ -509,6 +510,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         graph_vis_model_type: str,
         graph_points: np.ndarray,
         graph_annotation: List[str],
+        eta: float = 0.1, # For error margin in the distance
     ):
         super(ITLGraphEnvironment, self).__init__()
         # Should be injected via information extracted from Knowledge Grap
@@ -579,6 +581,10 @@ class ITLGraphEnvironment(Environment, nn.Module):
             )
         )
 
+        self.answer_embeddings = None  # This is the embeddings of the answer (batch_size, entity_dim)
+        self.answer_found = None       # This is a flag to denote if the answer has been already been found (batch_size, 1)
+        self.eta = eta                 # This is the error margin in the distance for finding the answer
+
     def get_llm_embeddings(self, questions: List[np.ndarray], device: torch.device) -> torch.Tensor:
         """
         Will take a list of list of token ids, pad them and then pass them to the embedding module to get single embeddings for each question
@@ -605,13 +611,15 @@ class ITLGraphEnvironment(Environment, nn.Module):
         return final_embedding
 
     # TOREM: We need to test if this can replace forward for now.
-    def step(self, actions: torch.Tensor) -> Observation:
+    def step(self, actions: torch.Tensor) -> Tuple[Observation, torch.Tensor, torch.Tensor]:
         """
         This one will simply find the closes emebdding in our class and dump it here as an observation.
         Args:
             - actions (torch.Tensor): Shall be of shape (batch_size, action_dimension)
         Return:
             - observations (torch.Tensor): The observations at the current state. Shape: (batch_size, observation_dim)
+            - rewards (torch.Tensor) (float): The rewards at the current state. Shape: (batch_size, 1)
+            - dones (torch.Tensor) (bool): The dones at the current state. Shape: (batch_size, 1)
         """
         assert isinstance(
             self.current_position, torch.Tensor
@@ -637,6 +645,17 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.current_position = self.knowledge_graph.sun_model.flexible_forward_protate(
             self.current_position, actions, 
         )
+
+        # No gradients are calculated here
+        with torch.no_grad():
+            angles_diff = angular_difference(
+                self.answer_embeddings/(self.knowledge_graph.sun_model.embedding_range.item()/torch.pi), 
+                self.current_position/(self.knowledge_graph.sun_model.embedding_range.item()/torch.pi),
+                smooth=False)
+            
+            found_ans = torch.norm(angles_diff, dim=-1)[:, torch.newaxis] < self.eta
+            torch.logical_or(self.answer_found, found_ans, out=self.answer_found)
+            extrinsic_reward = found_ans.float()
 
         # ! Approach 1: No restraint
 
@@ -688,7 +707,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             kge_action=detached_actions,
         )
         
-        return observation
+        return observation, extrinsic_reward, self.answer_found
 
     def _define_modules(
         self,
@@ -744,12 +763,15 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         return W1, W2, W1Dropout, W2Dropout, path_encoder
 
-    def reset(self, initial_states_info: torch.Tensor, relevant_ent: List[List[None]] = None) -> Observation:
+    def reset(self, initial_states_info: torch.Tensor, answer_ent: List[int], relevant_ent: List[List[None]] = None) -> Observation:
         """
         Will reset the episode to the initial position
         This will happen by grabbign the initial_states_info embeddings, concatenating them with the centroid and then passing them to the environment
         Args:
             - initial_state_info (torch.Tensor): In this implemntation sit is the initial_states_info
+            - answer_ent (List[int]): The answer entity for the current batch
+            - relevant_ent (List[List[None]]): The relevant entities for the current batch
+
         Returnd:
             - postion (torch.Tensor): Position in the graph
             - state (torch.Tensor): Aggregation of states visited so far summarized in a single vector per batch element.
@@ -765,6 +787,10 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # Local Alias: initial_states_info is just a name we stick to in order to comply with inheritance of Environment.
         self.current_questions_emb = initial_states_info  # (batch_size, emb_dim)
         self.current_step_no = 0
+
+        # get the embeddings of the answer entities
+        self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent) # (batch_size, emb_dim)
+        self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool)
 
         if self.nav_start_emb_type == 'centroid':
             # Create more complete representation of state

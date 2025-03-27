@@ -150,7 +150,6 @@ def batch_loop_dev(
     ########################################
     # Calculate Reinforce Objective
     ########################################
-    logger.warning(f"We just left dev rollout")
     # Compute policy gradient
     rewards_t = torch.stack(rewards).mean(dim=-1).sum(dim=0, keepdim=True)
     log_probs_t = torch.stack(log_probs)
@@ -240,9 +239,12 @@ def batch_loop(
 
     # ! Approach 2: Use the discounted rewards
     gamma = nav_agent.gamma
-    discounted_rewards = rewards_t.clone()
+    discounted_rewards = rewards_t.clone() # Shape: (batch_size, num_steps)
     for t in reversed(range(num_steps - 1)):
         discounted_rewards[:,t] += gamma * discounted_rewards[:,t + 1]
+
+    # Sample-wise normalization of the rewards for stability
+    discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)) / (discounted_rewards.std(axis=-1) + 1e-8)
 
     # ! Approach 3: Use the rewards as is but scale them
     # Scale rewards instead of normalizing
@@ -274,6 +276,7 @@ def batch_loop(
 
 
 def evaluate_training(
+    args,
     env: ITLGraphEnvironment,
     dev_df: pd.DataFrame,
     nav_agent: ContinuousPolicyGradient,
@@ -347,6 +350,7 @@ def evaluate_training(
         ########################################
         # Development/Validation Batch Loop
         ########################################
+        logger.warning(f"About to go into batch_loop_dev")
         pg_loss, eval_extras = batch_loop_dev(
             env,
             mini_batch,
@@ -388,6 +392,8 @@ def evaluate_training(
             torch.tensor(answer_id, dtype=torch.int),
         ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
 
+        # if args.verbose:
+        logger.warning(f"About to go into dump_evaluation_metrics")
         dump_evaluation_metrics(
             embedding_range=env.knowledge_graph.sun_model.embedding_range.item(),
             path_to_log=just_dump_it_here,
@@ -397,7 +403,7 @@ def evaluate_training(
             vector_rel_searcher=env.ann_index_manager_rel,
             question_tokenizer=question_tokenizer,
             answer_tokenizer=answer_tokenizer,
-		  # TODO: Make sure the entity2id and relation2id are saved in the correct order and is being used correctly
+        # TODO: Make sure the entity2id and relation2id are saved in the correct order and is being used correctly
             id2entity=kg.id2entity,					   
             id2relations=kg.id2relation,
             entity2title=env.entity2title,
@@ -465,7 +471,7 @@ def dump_evaluation_metrics(
     visualize: bool,
     writer: SummaryWriter,
     wandb_on: bool,
-    answer_tensor:torch.Tensor
+    answer_tensor:torch.Tensor,
 ):
     global initial_pos_flag
     global frame_count
@@ -540,9 +546,9 @@ def dump_evaluation_metrics(
 
             questions_txt = question_tokenizer.decode(questions)
             answer_txt = answer_tokenizer.decode(answer)
-            log_file.write(f"Question: {questions_txt}\n")
-            log_file.write(f"Answer: {answer_txt}\n")
-            log_file.write(f"HunchLLM Answer: {predicted_answer}\n")
+            log_file.write(f"Question: \n{questions_txt}\n")
+            log_file.write(f"Answer: \n{answer_txt}\n")
+            log_file.write(f"HunchLLM Answer: \n{predicted_answer}\n")
 
             # Match the relation that are closest to positions we visit
             _, relation_indices = vector_rel_searcher.search(kge_action, 1)
@@ -562,38 +568,38 @@ def dump_evaluation_metrics(
             'Context Tokens'
 
             relevant_entities_tokens = [id2entity[index] for index in relevant_entities]
-            log_file.write(f"Relevant Entity Tokens: {relevant_entities_tokens}\n")
+            log_file.write(f"Relevant Entity Tokens: \n{relevant_entities_tokens}\n")
 
             if entity2title:
                 entities_names = [entity2title[index] for index in relevant_entities_tokens]
-                log_file.write(f"Relevant Entity Names: {entities_names}\n")
+                log_file.write(f"Relevant Entity Names: \n{entities_names}\n")
                 wandb_steps.append(" , ".join(entities_names))
 
             relevant_relations_tokens = [id2relations[int(index)] for index in relevant_rels]
-            log_file.write(f"Relevant Relations Tokens: {relevant_relations_tokens}\n")
+            log_file.write(f"Relevant Relations Tokens: \n{relevant_relations_tokens}\n")
 
             if relation2title: 
                 relations_names = [relation2title[index] for index in relevant_relations_tokens]
-                log_file.write(f"Relevant Relations Names: {relations_names}\n")
+                log_file.write(f"Relevant Relations Names: \n{relations_names}\n")
                 wandb_steps.append(" -- ".join(relations_names))
 
             # -----------------------------------
             'Navigation Agent Tokens'
 
             relations_tokens = [id2relations[int(index)] for index in relation_indices.squeeze()]
-            log_file.write(f"Relations Tokens: {relations_tokens}\n")
+            log_file.write(f"Closest Relations Tokens: \n{relations_tokens}\n")
 
             if relation2title: 
                 relations_names = [relation2title[index] for index in relations_tokens]
-                log_file.write(f"Relations Names: {relations_names}\n")
+                log_file.write(f"Closest Relations Names: \n{relations_names}\n")
                 wandb_steps.append(" -- ".join(relations_names))
 
             entities_tokens = [id2entity[index] for index in pos_ids.squeeze()]
-            log_file.write(f"Entity Tokens: {entities_tokens}\n")
+            log_file.write(f"Closest Entity Tokens: \n{entities_tokens}\n")
 
             if entity2title: 
                 entities_names = [entity2title[index] for index in entities_tokens]
-                log_file.write(f"Entity Names: {entities_names}\n")
+                log_file.write(f"Closest Entity Names: \n{entities_names}\n")
                 wandb_steps.append(" --> ".join(entities_names))
 
             # -----------------------------------
@@ -808,6 +814,7 @@ def get_phase(x, metric="degree"):
     
 
 def train_multihopkg(
+    args,
     batch_size: int,
     batch_size_dev: int,
     epochs: int,
@@ -908,6 +915,7 @@ def train_multihopkg(
             if batch_count % mbatches_b4_eval == 0:
                 answer_id = mini_batch["Answer-Entity"].tolist()  # Extract answer_id from mini_batch
                 evaluate_training(
+                    args,
                     env,
                     dev_df,
                     nav_agent,
@@ -1175,7 +1183,11 @@ def rollout(
     # TODO: make sure we keep all seen nodes up to date
 
     # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
-    observations = env.reset(questions_embeddings, relevant_ent = relevant_entities)
+    observations = env.reset(
+        questions_embeddings,
+        answer_ent = answer_id,
+        relevant_ent = relevant_entities
+    )
     cur_position, cur_state = observations.position, observations.state
     # Should be of shape (batch_size, 1, hidden_dim)
 
@@ -1207,7 +1219,7 @@ def rollout(
         sampled_actions, log_probs, entropies = nav_agent(cur_state)
 
         # TODO:Make sure we are gettign rewards from the environment.
-        observations = env.step(sampled_actions)
+        observations, kg_rewards, kg_dones = env.step(sampled_actions)
         # Ah ssampled_actions are the ones that have to go against the knowlde garph.
 
         states = observations.state
@@ -1231,7 +1243,7 @@ def rollout(
 
         rewards.append(llm_rewards)
 
-        if calculate_path_reward:
+        if calculate_path_reward: # intrinsic reward
             # Navigation Agent Reward
             # nav_ent_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), relevant_embeddings))
             # nav_answer_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), answer_tensor))
@@ -1652,6 +1664,7 @@ def main():
         args.verbose = True
 
     train_multihopkg(
+        args,
         batch_size=args.batch_size,
         batch_size_dev=args.batch_size_dev,
         epochs=args.epochs,
