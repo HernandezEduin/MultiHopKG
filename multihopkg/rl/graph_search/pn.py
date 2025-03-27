@@ -788,9 +788,12 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.current_questions_emb = initial_states_info  # (batch_size, emb_dim)
         self.current_step_no = 0
 
+        self.answer_embeddings = None
+        self.answer_found = None
+
         # get the embeddings of the answer entities
         self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent) # (batch_size, emb_dim)
-        self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool)
+        self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device)
 
         if self.nav_start_emb_type == 'centroid':
             # Create more complete representation of state

@@ -133,7 +133,7 @@ def batch_loop_dev(
     answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
 
     logger.warning(f"About to go into rollout")
-    log_probs, rewards, path_rewards, eval_extras = rollout(
+    log_probs, rewards, kg_rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
         hunch_llm,
@@ -199,7 +199,7 @@ def batch_loop(
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
 
     logger.debug("About to rollout")
-    log_probs, rewards, path_rewards, eval_extras = rollout(
+    log_probs, llm_rewards, kg_rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
         hunch_llm,
@@ -218,7 +218,7 @@ def batch_loop(
     # Compute policy gradient
     logger.debug("About to calculate rewards")
     rewards_t = (
-        torch.stack(rewards)
+        torch.stack(llm_rewards)
     ).permute(1,0,2)  # TODO: I think I need to add the gamma here
     # Get only masked, then mean
     rewards_t_unpacked = []
@@ -234,17 +234,25 @@ def batch_loop(
 
     # TODO: Check if this is not bad. 
     rewards_t = rewards_t.expand_as(log_probs_t) # TOREM: This is a hack to make the shapes match
+
+    kg_rewards_t = (
+        torch.stack(kg_rewards)
+    ).permute(1,0,2) # Correcting to Shape: (batch_size, num_steps, reward_type)
+
+    kg_rewards_t = kg_rewards_t.squeeze(2) # Shape: (batch_size, num_steps)
+
     # ! Modifying the rewards to stabilize training
     # ! Approach 1: Use the rewards as is
 
     # ! Approach 2: Use the discounted rewards
     gamma = nav_agent.gamma
-    discounted_rewards = rewards_t.clone() # Shape: (batch_size, num_steps)
+    discounted_rewards = torch.zeros_like(rewards_t.clone()).to(rewards_t.device) # Shape: (batch_size, num_steps)
+    discounted_rewards[:,-1] = rewards_t[:,-1] + kg_rewards_t[:,-1]
     for t in reversed(range(num_steps - 1)):
-        discounted_rewards[:,t] += gamma * discounted_rewards[:,t + 1]
+        discounted_rewards[:,t] += gamma * (rewards_t[:,t + 1] + kg_rewards_t[:,t + 1])
 
     # Sample-wise normalization of the rewards for stability
-    discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)) / (discounted_rewards.std(axis=-1) + 1e-8)
+    discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
 
     # ! Approach 3: Use the rewards as is but scale them
     # Scale rewards instead of normalizing
@@ -258,8 +266,8 @@ def batch_loop(
     pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
     # TODO: Perhaps only use the first few steps ?
 
-    if use_path_reward:
-        pg_loss += -1 * path_rewards.sum(dim=-1).unsqueeze(1) # TOREM: path_rewards is a tensor of shape (batch_size, reward_type)
+    # if use_path_reward:
+    #     pg_loss += -1 * kg_intrinsic_rewards.sum(dim=-1).unsqueeze(1) # TOREM: path_rewards is a tensor of shape (batch_size, reward_type)
         # current rewards types [relevant_node_reward, answer_node_reward, action_reward]
 
     # ! Approach 2: Use the discounted rewards
@@ -1148,7 +1156,7 @@ def rollout(
     relevant_rels: List[List[int]],
     answer_id: List[int],
     calculate_path_reward: bool = False,
-    dev_mode: bool = False,
+    dev_mode: bool = False
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor], Dict[str, Any]]:
     """
     Will execute RL episode rollouts in parallel.
@@ -1171,6 +1179,7 @@ def rollout(
     ########################################
     log_action_probs = []
     rewards = []
+    kg_rewards = []
     nav_ent_distance = []
     nav_rel_distance = []
     nav_answer_distance = []
@@ -1186,29 +1195,32 @@ def rollout(
     observations = env.reset(
         questions_embeddings,
         answer_ent = answer_id,
-        relevant_ent = relevant_entities
+        relevant_ent = relevant_entities,
     )
     cur_position, cur_state = observations.position, observations.state
     # Should be of shape (batch_size, 1, hidden_dim)
-
+    
+    answer_tensor = get_embeddings_from_indices(
+        env.knowledge_graph.sun_model.entity_embedding,
+        torch.tensor(answer_id, dtype=torch.int),
+    ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
+    
     if calculate_path_reward:
+        pass
         # Calculate embeddings of the relevant entities to be used in the reward function
-        answer_tensor = get_embeddings_from_indices(
-            env.knowledge_graph.sun_model.entity_embedding,
-            torch.tensor(answer_id, dtype=torch.int),
-        ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
 
-        padded_relevant_entities = pad_and_convert_to_tensor(relevant_entities)
-        relevant_embeddings = get_embeddings_from_indices(
-            env.knowledge_graph.sun_model.entity_embedding,
-            padded_relevant_entities,
-            ) # Shape: (batch, num_relevant_entities, embedding_dim)
 
-        padded_relevant_relations = pad_and_convert_to_tensor(relevant_rels)
-        relevant_relations = get_embeddings_from_indices(
-            env.knowledge_graph.sun_model.relation_embedding,
-            padded_relevant_relations,
-            ) # Shape: (batch, num_relevant_relations, embedding_dim)
+        # padded_relevant_entities = pad_and_convert_to_tensor(relevant_entities)
+        # relevant_embeddings = get_embeddings_from_indices(
+        #     env.knowledge_graph.sun_model.entity_embedding,
+        #     padded_relevant_entities,
+        #     ) # Shape: (batch, num_relevant_entities, embedding_dim)
+
+        # padded_relevant_relations = pad_and_convert_to_tensor(relevant_rels)
+        # relevant_relations = get_embeddings_from_indices(
+        #     env.knowledge_graph.sun_model.relation_embedding,
+        #     padded_relevant_relations,
+        #     ) # Shape: (batch, num_relevant_relations, embedding_dim)
 
     # pn.initialize_path(kg) # TOREM: Unecessasry to ask pn to form it for us.
     states_so_far = []
@@ -1219,7 +1231,7 @@ def rollout(
         sampled_actions, log_probs, entropies = nav_agent(cur_state)
 
         # TODO:Make sure we are gettign rewards from the environment.
-        observations, kg_rewards, kg_dones = env.step(sampled_actions)
+        observations, kg_extrinsic_rewards, kg_dones = env.step(sampled_actions)
         # Ah ssampled_actions are the ones that have to go against the knowlde garph.
 
         states = observations.state
@@ -1243,14 +1255,22 @@ def rollout(
 
         rewards.append(llm_rewards)
 
-        if calculate_path_reward: # intrinsic reward
-            # Navigation Agent Reward
-            # nav_ent_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), relevant_embeddings))
-            # nav_answer_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), answer_tensor))
-            nav_rel_distance.append(_chamfer_distance_part1(sampled_actions.unsqueeze(1), relevant_relations))
+        kg_intrinsic_reward = angular_difference(
+            observations.kge_cur_pos.unsqueeze(1)/(env.knowledge_graph.sun_model.embedding_range.item()/torch.pi),
+            answer_tensor/(env.knowledge_graph.sun_model.embedding_range.item()/torch.pi),
+            smooth=True
+        ).norm(dim=-1)
 
-            nav_ent_distance.append(_chamfer_distance_cosine_part1(observations.kge_cur_pos.unsqueeze(1), relevant_embeddings).squeeze(1))
-            nav_answer_distance.append(_chamfer_distance_cosine_part1(observations.kge_cur_pos.unsqueeze(1), answer_tensor).squeeze(1))
+        kg_rewards.append(kg_dones*kg_extrinsic_rewards + torch.logical_not(kg_dones)*kg_intrinsic_reward)
+
+        # if calculate_path_reward: # intrinsic reward 2
+        #     # Navigation Agent Reward
+        #     # nav_ent_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), relevant_embeddings))
+        #     # nav_answer_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), answer_tensor))
+        #     nav_rel_distance.append(_chamfer_distance_part1(sampled_actions.unsqueeze(1), relevant_relations))
+
+        #     nav_ent_distance.append(_chamfer_distance_cosine_part1(observations.kge_cur_pos.unsqueeze(1), relevant_embeddings).squeeze(1))
+        #     nav_answer_distance.append(_chamfer_distance_cosine_part1(observations.kge_cur_pos.unsqueeze(1), answer_tensor).squeeze(1))
 
         # TODO: Make obseervations not rely on the question
 
@@ -1280,30 +1300,30 @@ def rollout(
     # dev_dictionary["sampled_actions"] = torch.stack(dev_dictionary["sampled_actions"])
     # dev_dictionary["visited_position"] = torch.stack(dev_dictionary["visited_position"])
 
-    path_reward = torch.zeros((questions_embeddings.shape[0], 3)) # Shape: (batch, 3)
-    if calculate_path_reward:
-        # Finish Calculating Chamfer Distance Here
-        # nav_ent_distance = torch.stack(nav_ent_distance).permute(1,0,2,3)
-        # nav_ent_reward = _chamfer_distance_part2(nav_ent_distance)
+    # path_reward = torch.zeros((questions_embeddings.shape[0], 3)) # Shape: (batch, 3)
+    # if calculate_path_reward:
+    #     # Finish Calculating Chamfer Distance Here
+    #     # nav_ent_distance = torch.stack(nav_ent_distance).permute(1,0,2,3)
+    #     # nav_ent_reward = _chamfer_distance_part2(nav_ent_distance)
 
-        nav_ent_distance = torch.stack(nav_ent_distance).permute(1,0,2)
-        nav_ent_reward = _chamfer_distance_cosine_part2(nav_ent_distance)
+    #     nav_ent_distance = torch.stack(nav_ent_distance).permute(1,0,2)
+    #     nav_ent_reward = _chamfer_distance_cosine_part2(nav_ent_distance)
 
-        # nav_answer_distance = torch.stack(nav_answer_distance).permute(1,0,2,3)
-        # nav_answer_reward = _chamfer_distance_part2(nav_answer_distance)
+    #     # nav_answer_distance = torch.stack(nav_answer_distance).permute(1,0,2,3)
+    #     # nav_answer_reward = _chamfer_distance_part2(nav_answer_distance)
 
-        nav_answer_distance = torch.stack(nav_answer_distance).permute(1,0,2)
-        nav_answer_reward = _chamfer_distance_cosine_part2(nav_answer_distance)
+    #     nav_answer_distance = torch.stack(nav_answer_distance).permute(1,0,2)
+    #     nav_answer_reward = _chamfer_distance_cosine_part2(nav_answer_distance)
 
-        nav_rel_distance = torch.stack(nav_rel_distance).permute(1,0,2,3)
-        nav_rel_reward = _chamfer_distance_part2(nav_rel_distance)
+    #     nav_rel_distance = torch.stack(nav_rel_distance).permute(1,0,2,3)
+    #     nav_rel_reward = _chamfer_distance_part2(nav_rel_distance)
 
-        # path_reward = torch.stack([nav_ent_reward, nav_answer_reward, nav_rel_reward],dim=1) # Shape: (batch, 3)
-        path_reward = torch.stack([nav_ent_reward, nav_answer_reward],dim=1) # Shape: (batch, 2)
+    #     # path_reward = torch.stack([nav_ent_reward, nav_answer_reward, nav_rel_reward],dim=1) # Shape: (batch, 3)
+    #     path_reward = torch.stack([nav_ent_reward, nav_answer_reward],dim=1) # Shape: (batch, 2)
 
     # Return Rewards of Rollout as a Tensor
     
-    return log_action_probs, rewards, path_reward, eval_metrics
+    return log_action_probs, rewards, kg_rewards, eval_metrics
 
 def pad_and_convert_to_tensor(array: List[np.ndarray[int]]) -> torch.Tensor:
     """
