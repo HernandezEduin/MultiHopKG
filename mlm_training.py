@@ -134,7 +134,7 @@ def batch_loop_dev(
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
 
     logger.warning(f"About to go into rollout")
-    log_probs, rewards, kg_rewards, eval_extras = rollout(
+    log_probs, llm_rewards, kg_rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
         hunch_llm,
@@ -178,7 +178,7 @@ def batch_loop_dev(
     kg_rewards_t = kg_rewards_t.squeeze(2) # Shape: (batch_size, num_steps)
 
     assert (
-        not torch.isnan(llm_rewards_t).any() and not torch.isnan(log_probs_t).any() and not(kg_rewards_t).any()
+        not torch.isnan(llm_rewards_t).any() and not torch.isnan(log_probs_t).any() and not torch.isnan(kg_rewards_t).any()
     ), "NaN detected in the rewards or log probs (batch_loop_dev). Aborting training."
 
     gamma = nav_agent.gamma
@@ -191,9 +191,7 @@ def batch_loop_dev(
     discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
 
     # ! TODO: Consider using the path reward here
-    pg_loss = -1 * rewards_t * log_probs_t
-    if use_path_reward:
-        pg_loss += -1 * path_rewards.sum(dim=-1).unsqueeze(0)
+    pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
 
     # logger.info(f"Does pg_loss require grad? {pg_loss.requires_grad}")
 
