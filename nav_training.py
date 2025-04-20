@@ -180,10 +180,10 @@ def rollout(
         observations, kg_extrinsic_rewards, kg_dones = env.step(sampled_actions)
         # Ah ssampled_actions are the ones that have to go against the knowlde garph.
 
-        states = observations.state
+        cur_state = observations.state
         
         # For now, we use states given by the path encoder and positions mostly for debugging
-        states_so_far.append(states)
+        states_so_far.append(cur_state)
 
         # VISITED EMBEDDINGS IS THE ENCODER
 
@@ -205,7 +205,6 @@ def rollout(
         ########################################
         # Log Stuff for across batch
         ########################################
-        cur_state = states
         log_action_probs.append(log_probs)
 
         ########################################
@@ -694,7 +693,7 @@ def train_nav_multihopkg(
     optimizer = torch.optim.Adam(  # type: ignore
         filter(
             lambda p: p.requires_grad,
-            list(env.concat_projector.parameters()) + list(nav_agent.parameters())
+            list(env.W1.parameters()) + list(env.W2.parameters()) + list(env.path_encoder.parameters()) + list(nav_agent.parameters())
         ),
         lr=learning_rate
     )
@@ -1059,7 +1058,7 @@ def main():
         num_rollout_steps=args.num_rollout_steps,
         dim_action=dim_relation,
         dim_hidden=args.rnn_hidden,
-        dim_observation=args.history_dim,  # observation will be into history
+        dim_observation=dim_relation,  # observation will be into history
     ).to(args.device)
 
     # ======================================

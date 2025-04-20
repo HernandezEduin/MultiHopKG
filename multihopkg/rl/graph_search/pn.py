@@ -584,8 +584,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.answer_found = None       # This is a flag to denote if the answer has been already been found (batch_size, 1)
         self.epsilon = epsilon                 # This is the error margin in the distance for finding the answer
 
-        # (self.W1, self.W2, self.W1Dropout, self.W2Dropout, self.path_encoder, self.concat_projector) = (
-        (self.concat_projector, self.W2, self.W1Dropout, self.W2Dropout, _) = (
+        # (self.W1, self.W2, self.W1Dropout, self.W2Dropout, self.concat_projector) = (
+        (self.W1, self.W2, self.W1Dropout, self.W2Dropout, self.path_encoder) = (
             self._define_modules(
                 self.entity_dim,
                 self.ff_dropout_rate,
@@ -679,10 +679,24 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # ! Approach 1: Normal Projection
         concatenations = torch.cat(
-            [self.current_questions_emb, self.current_position], dim=-1
-        )
+            [self.current_questions_emb, self.path.squeeze(1)], dim=-1
+        ) #.unsqueeze(1)  # (batch_size, 1, emb_dim + action_dim)
 
-        projected_state = self.concat_projector(concatenations)
+        projected_state = self.W1(concatenations)
+        projected_state = F.relu(projected_state)
+        projected_state = self.W1Dropout(projected_state)
+        projected_state = self.W2(projected_state)
+        projected_state = self.W2Dropout(projected_state)
+
+        with torch.set_grad_enabled(True):
+            self.path_encoder.train()
+            newest_info = torch.cat([actions, self.current_position], dim=-1).unsqueeze(1)    # [action_taken, newest_position]
+            self.path, (self.hidden_state, self.cell_state) = self.path_encoder(newest_info, (self.hidden_state, self.cell_state))
+
+        # with torch.set_grad_enabled(True):
+        #     self.concat_projector.train()
+        #     # LSTM step
+        #     projected_state, (self.hidden_state, self.cell_state) = self.concat_projector(concatenations, (self.hidden_state, self.cell_state))
 
         # ! Approach 2: Attention Fusion (Gradients are not moving, must recheck)
         # projected_state = self.concat_projector(self.current_questions_emb, self.current_position)
@@ -715,12 +729,13 @@ class ITLGraphEnvironment(Environment, nn.Module):
     ) -> Tuple[nn.Module, nn.Module, nn.Module, nn.Module, nn.Module]:
         # We assume both relationships and entityes have mbeddings
         print(f"entity_dim: {entity_dim}, relation_dim: {relation_dim}")
+        print(f"history_dim: {history_dim}, question_dim: {question_dim}")
         # input_dim = history_dim + entity_dim + relation_dim
         # We assume action_dim is relation_dim
         action_dim = relation_dim
         # input_dim = action_dim + question_dim
         # input_dim = action_dim + question_dim
-        input_dim = entity_dim + question_dim
+        input_dim = history_dim + question_dim
 
         # W1 = nn.Linear(input_dim, action_dim)
         # W2 = nn.Linear(action_dim, action_dim)
@@ -733,7 +748,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # # TODO: Check if we actually want to use lstm, we have a tranformer with positional encoding so I dont think we need this.
         path_encoder = nn.LSTM(
-            input_size=action_dim + question_dim,
+            input_size=action_dim + entity_dim,
             hidden_size=history_dim,  # AFAIK equiv this output size
             num_layers=history_num_layers,
             batch_first=True,
@@ -777,6 +792,10 @@ class ITLGraphEnvironment(Environment, nn.Module):
                 "Mis-use of the environment. Episode step must've been set back to 0 before end."
                 " Maybe you did not end your episode correctly"
             )
+        
+        #TODO: Find a better way to do this
+        device = next(self.path_encoder.parameters()).device
+
         ## Values
         # Local Alias: initial_states_info is just a name we stick to in order to comply with inheritance of Environment.
         self.current_questions_emb = initial_states_info  # (batch_size, emb_dim)
@@ -784,18 +803,33 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # get the embeddings of the answer entities
         self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent).detach() # (batch_size, emb_dim)
-        self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device).detach() # (batch_size, 1)
+        self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(device).detach() # (batch_size, 1)
 
         init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), relevant_ent)
         self.current_position = init_emb.clone()
+
+        # Initialize hidden state
+        self.hidden_state = torch.zeros(self.path_encoder.num_layers, len(answer_ent), self.path_encoder.hidden_size).to(device)
+        self.cell_state = torch.zeros(self.path_encoder.num_layers, len(answer_ent), self.path_encoder.hidden_size).to(device)
+
+        # [no action taken, starting position]
+        init_action = torch.cat([torch.zeros_like(self.current_position), self.current_position], dim=-1).unsqueeze(1) # Shape: (batch_size, 1, embedding_dim)
+        self.path, (self.hidden_state, self.cell_state) = self.path_encoder(init_action, (self.hidden_state, self.cell_state))
 
         # ! Inspecting projections (gradients variance is too high from the start)
 
         # ! Approach 1: Normal Projection
         concatenations = torch.cat(
-            [self.current_questions_emb, init_emb], dim=-1
-        )
-        projected_state = self.concat_projector(concatenations)
+            [self.current_questions_emb, self.path.squeeze(1)], dim=-1
+        ) #.unsqueeze(1)  # (batch_size, 1, emb_dim + action_dim)
+
+        projected_state = self.W1(concatenations)
+        projected_state = F.relu(projected_state)
+        projected_state = self.W1Dropout(projected_state)
+        projected_state = self.W2(projected_state)
+        projected_state = self.W2Dropout(projected_state)
+
+        # projected_state, (self.hidden_state, self.cell_state) = self.concat_projector(concatenations, (self.hidden_state, self.cell_state))
 
         # ! Approach 2: Attention Fusion (Gradients are not moving, must recheck)
         # projected_state = self.concat_projector(self.current_questions_emb, init_emb)
