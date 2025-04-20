@@ -272,7 +272,7 @@ def dump_evaluation_metrics(
 
     'Loss'
     pg_loss = evaluation_metrics_dictionary["pg_loss"]
-    writer.add_scalar('PG Loss', pg_loss[:,-1].mean(), iteration) # Only consider the last step
+    writer.add_scalar('PG Loss', pg_loss.mean(), iteration) # Only consider the last step
 
     'Distance Metrics'
     distance_between_position_avg = sum(distance_between_position_avg)/len(distance_between_position_avg)

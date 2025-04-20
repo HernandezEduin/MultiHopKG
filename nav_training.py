@@ -150,6 +150,7 @@ def rollout(
     # Prepare lists to be returned
     ########################################
     log_action_probs = []
+    action_entropy = []
     kg_rewards = []
     eval_metrics = DefaultDict(list)
 
@@ -206,6 +207,7 @@ def rollout(
         # Log Stuff for across batch
         ########################################
         log_action_probs.append(log_probs)
+        action_entropy.append(entropies)
 
         ########################################
         # Stuff that we will only use for evaluation
@@ -225,7 +227,7 @@ def rollout(
         eval_metrics = {k: torch.stack(v) for k, v in eval_metrics.items()}
 
     # Return Rewards of Rollout as a Tensor
-    return log_action_probs, kg_rewards, eval_metrics
+    return log_action_probs, action_entropy, kg_rewards, eval_metrics
 
 def batch_loop_dev(
     env: ITLGraphEnvironment,
@@ -280,7 +282,7 @@ def batch_loop_dev(
     question_embeddings = env.get_llm_embeddings(questions, device)
 
     logger.warning(f"About to go into rollout")
-    log_probs, kg_rewards, eval_extras = rollout(
+    log_probs, entropy, kg_rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
         env,
@@ -296,6 +298,7 @@ def batch_loop_dev(
     ########################################
 
     log_probs_t = torch.stack(log_probs).T
+    entropy_t = torch.stack(entropy).T
     num_steps = log_probs_t.shape[-1]
 
     assert not torch.isnan(log_probs_t).any(), "NaN detected in the log probs (batch_loop_dev). Aborting training."
@@ -316,17 +319,27 @@ def batch_loop_dev(
     # TODO: Check if a weight is needed for combining the rewards
     gamma = nav_agent.gamma
     discounted_rewards = torch.zeros_like(kg_rewards_t.clone()).to(kg_rewards_t.device) # Shape: (batch_size, num_steps)
-    discounted_rewards[:,-1] +=  kg_rewards_t[:,-1]
+    discounted_rewards[:,-1] =  kg_rewards_t[:,-1]
+    R = torch.zeros(discounted_rewards.shape[0]).to(discounted_rewards.device)
     for t in reversed(range(num_steps - 1)):
-        discounted_rewards[:,t] += gamma * (kg_rewards_t[:,t + 1])
+        # discounted_rewards[:,t] += gamma * (kg_rewards_t[:,t + 1])
+
+        # Considering only the final reward
+        R = gamma * R + discounted_rewards[:, t]
+        discounted_rewards[:,t] = R
 
     # Sample-wise normalization of the rewards for stability
-    discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
+    # discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
     
     #--------------------------------------------------------------------------
     'Loss Calculation'
 
-    pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
+    # pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
+    pg_loss = torch.zeros(discounted_rewards.shape[0]).to(discounted_rewards.device)
+    for t in range(num_steps):
+        pg_loss += -discounted_rewards[:,t] * log_probs_t[:,t]
+
+    pg_loss = (pg_loss.unsqueeze(1) - entropy_t * 0.02).mean(dim=-1) # beta in Salesforce, consider adding it as a parameter
 
     logger.warning(f"We just left dev rollout")
 
@@ -385,7 +398,7 @@ def batch_loop(
     answer_id = mini_batch["Answer-Entity"].tolist()
     question_embeddings = env.get_llm_embeddings(questions, device)
 
-    log_probs, kg_rewards, eval_extras = rollout(
+    log_probs, entropy, kg_rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
         env,
@@ -401,6 +414,7 @@ def batch_loop(
     logger.debug("About to calculate rewards")
 
     log_probs_t = torch.stack(log_probs).T
+    entropy_t = torch.stack(entropy).T
     num_steps = log_probs_t.shape[-1]
 
     #-------------------------------------------------------------------------
@@ -417,18 +431,29 @@ def batch_loop(
     # TODO: Check if a weight is needed for combining the rewards
     gamma = nav_agent.gamma
     discounted_rewards = torch.zeros_like(kg_rewards_t.clone()).to(kg_rewards_t.device) # Shape: (batch_size, num_steps)
-    discounted_rewards[:,-1] += kg_rewards_t[:,-1]
+    discounted_rewards[:,-1] = kg_rewards_t[:,-1]
+    R = torch.zeros(discounted_rewards.shape[0]).to(discounted_rewards.device)
     for t in reversed(range(num_steps - 1)):
-        discounted_rewards[:,t] += gamma * (kg_rewards_t[:,t + 1])
+        # discounted_rewards[:,t] += gamma * (kg_rewards_t[:,t + 1])
+
+        # Considering only the final reward
+        R = gamma * R + discounted_rewards[:, t]
+        discounted_rewards[:,t] = R
 
     # Sample-wise normalization of the rewards for stability
-    discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
+    # discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
 
 
     #--------------------------------------------------------------------------
     'Loss Calculation'
 
-    pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
+    # pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
+
+    pg_loss = torch.zeros(discounted_rewards.shape[0]).to(discounted_rewards.device)
+    for t in range(num_steps):
+        pg_loss += -discounted_rewards[:,t] * log_probs_t[:,t]
+
+    pg_loss = (pg_loss.unsqueeze(1) - entropy_t * 0.02).mean(dim=-1) # beta in Salesforce, consider adding it as a parameter
 
     return pg_loss, eval_extras
 
