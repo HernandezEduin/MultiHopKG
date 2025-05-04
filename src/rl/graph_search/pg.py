@@ -73,6 +73,7 @@ class PolicyGradient(LFramework):
             R = self.gamma * R + cum_discounted_rewards[i]
             cum_discounted_rewards[i] = R
 
+        # !NOTE: Important, read this section carefully
         # Compute policy gradient
         pg_loss, pt_loss = 0, 0
         for i in range(self.num_rollout_steps):
@@ -124,17 +125,18 @@ class PolicyGradient(LFramework):
         seen_nodes = int_fill_var_cuda(e_s.size(), kg.dummy_e).unsqueeze(1)
         path_components = []
 
+        # Initialize path using a dummy start relation and the source entity.
         path_trace = [(r_s, e_s)]
         pn.initialize_path((r_s, e_s), kg)
 
         for t in range(num_steps):
-            last_r, e = path_trace[-1]
-            obs = [e_s, q, e_t, t==(num_steps-1), last_r, seen_nodes]
+            last_r, e = path_trace[-1] # [newest_relation, newes_position]
+            obs = [e_s, q, e_t, t==(num_steps-1), last_r, seen_nodes] # [Starting node, question, answer node, is_last_step, recent_relation, seen_nodes]
             db_outcomes, inv_offset, policy_entropy = pn.transit(
                 e, obs, kg, use_action_space_bucketing=self.use_action_space_bucketing)
             sample_outcome = self.sample_action(db_outcomes, inv_offset)
             action = sample_outcome['action_sample']
-            pn.update_path(action, kg)
+            pn.update_path(action, kg) # updates memory at the end
             action_prob = sample_outcome['action_prob']
             log_action_probs.append(ops.safe_log(action_prob))
             action_entropy.append(policy_entropy)

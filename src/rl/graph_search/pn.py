@@ -54,11 +54,11 @@ class GraphSearchPolicy(nn.Module):
         :param e: agent location (node) at step t.
         :param obs: agent observation at step t.
             e_s: source node
-            q: query relation
-            e_t: target node
-            last_step: If set, the agent is carrying out the last step.
-            last_r: label of edge traversed in the previous step
-            seen_nodes: notes seen on the paths
+            q: query relation 
+            e_t: target node # NOTE: UNUSED
+            last_step: If set, the agent is carrying out the last step. # NOTE: UNUSED
+            last_r: label of edge traversed in the previous step # NOTE: UNUSED
+            seen_nodes: notes seen on the paths # NOTE: UNUSED
         :param kg: Knowledge graph environment.
         :param use_action_space_bucketing: If set, group the action space of different nodes 
             into buckets by their sizes.
@@ -79,7 +79,7 @@ class GraphSearchPolicy(nn.Module):
 
         # Representation of the current state (current node and other observations)
         Q = kg.get_relation_embeddings(q)
-        H = self.path[-1][0][-1, :, :]
+        H = self.path[-1][0][-1, :, :] # (batch_size, history_dim) for hidden state
         if self.relation_only:
             X = torch.cat([H, Q], dim=-1)
         elif self.relation_only_in_path:
