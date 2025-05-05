@@ -43,6 +43,7 @@ def hits_and_ranks(examples, scores, all_answers, verbose=False):
     hits_at_5 = 0
     hits_at_10 = 0
     mrr = 0
+    mr = 0
     for i, example in enumerate(examples):
         e1, e2, r = example
         pos = np.where(top_k_targets[i] == e2)[0]
@@ -57,12 +58,14 @@ def hits_and_ranks(examples, scores, all_answers, verbose=False):
                         if pos < 1:
                             hits_at_1 += 1
             mrr += 1.0 / (pos + 1)
+            mr += pos + 1
 
     hits_at_1 = float(hits_at_1) / len(examples)
     hits_at_3 = float(hits_at_3) / len(examples)
     hits_at_5 = float(hits_at_5) / len(examples)
     hits_at_10 = float(hits_at_10) / len(examples)
     mrr = float(mrr) / len(examples)
+    mr = float(mr) / len(examples)
 
     if verbose:
         print('Hits@1 = {:.3f}'.format(hits_at_1))
@@ -70,6 +73,7 @@ def hits_and_ranks(examples, scores, all_answers, verbose=False):
         print('Hits@5 = {:.3f}'.format(hits_at_5))
         print('Hits@10 = {:.3f}'.format(hits_at_10))
         print('MRR = {:.3f}'.format(mrr))
+        print('MR = {:.3f}'.format(mr))
 
     return hits_at_1, hits_at_3, hits_at_5, hits_at_10, mrr
 
