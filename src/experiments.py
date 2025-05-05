@@ -33,8 +33,15 @@ from src.utils.ops import flatten
 
 torch.cuda.set_device(args.gpu)
 
-torch.manual_seed(args.seed)
-torch.cuda.manual_seed_all(args.seed)
+# torch.manual_seed(args.seed)
+# torch.cuda.manual_seed_all(args.seed)
+
+def set_seeds(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 def process_data():
     data_dir = args.data_dir
@@ -590,8 +597,9 @@ def run_experiment(args):
                     random_seed = random.randint(0, 1e16)
                     print("\nRandom seed = {}\n".format(random_seed))
                     o_f.write("\nRandom seed = {}\n\n".format(random_seed))
-                    torch.manual_seed(random_seed)
-                    torch.cuda.manual_seed_all(args, random_seed)
+                    # torch.manual_seed(random_seed)
+                    # torch.cuda.manual_seed_all(args, random_seed)
+                    set_seeds(random_seed)
                     initialize_model_directory(args, random_seed)
                     lf = construct_model(args)
                     lf.cuda()
@@ -692,6 +700,7 @@ def run_experiment(args):
                             setattr(args, hp, float(value))
                         signature += ':{}'.format(value)
                         print('* {}: {}'.format(hp, value))
+                    set_seeds(args.seed) # TODO: check if correct for here
                     initialize_model_directory(args)
                     lf = construct_model(args)
                     lf.cuda()
@@ -736,9 +745,12 @@ def run_experiment(args):
                     o_f.close()
 
             elif args.run_ablation_studies:
+                set_seeds(args.seed) # TODO: check if correct for here
                 run_ablation_studies(args)
             else:
-                initialize_model_directory(args)
+                set_seeds(args.seed)
+                initialize_model_directory(args, args.seed)
+
                 lf = construct_model(args)
                 lf.cuda()
 

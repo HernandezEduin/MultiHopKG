@@ -58,6 +58,7 @@ cmd="python3 -m src.experiments \
     --complex_state_dict_path $complex_state_dict_path \
     --conve_state_dict_path $conve_state_dict_path \
     --gpu $gpu \
+    --seed $seed \
     $ARGS"
 
 echo "Executing $cmd"
