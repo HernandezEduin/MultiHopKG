@@ -252,8 +252,8 @@ class KGEModel(nn.Module):
             gamma=gamma,
             double_entity_embedding=double_entity_embedding,
             double_relation_embedding=double_relation_embedding,
-            uses_wildcard_entity=uses_wildcard_entity,
-            uses_wildcard_relation=uses_wildcard_relation,
+            wildcard_entity=uses_wildcard_entity,
+            wildcard_relation=uses_wildcard_relation,
         )
         
         # Load pretrained embeddings
@@ -1002,7 +1002,7 @@ class KGEModel(nn.Module):
     
     @staticmethod
     def calculate_task_metrics(
-        logs: Dict[str, List[Dict[str, Any]]], base_keys: List[int]
+        logs: Dict[str, List[Dict[str, Any]]], base_keys: List[str]
     ) -> Dict[str, float]:
         """
         Calculate task-dependent metrics from the logs.
