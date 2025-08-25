@@ -337,17 +337,21 @@ def rollout(
     kg_rewards = []
     eval_metrics = DefaultDict(list)
 
-    answer_tensor = get_embeddings_from_indices(
-            env.knowledge_graph.entity_embedding,
-            torch.tensor(answer_id, dtype=torch.int),
-    ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
-
     # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
     observations = env.reset(
         questions_embeddings,
         answer_ent = answer_id,
         source_ent = source_ent
     )
+
+    num_rollouts = env.num_rollouts
+
+    answer_tensor = get_embeddings_from_indices(
+            env.knowledge_graph.entity_embedding,
+            torch.tensor(answer_id, dtype=torch.int),
+    ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
+
+    if num_rollouts > 0: answer_tensor = answer_tensor.expand(-1, num_rollouts, -1) # Shape: (batch, num_rollouts, embedding_dim)
 
     cur_state = observations.state
     # Should be of shape (batch_size, 1, hidden_dim)
@@ -372,12 +376,19 @@ def rollout(
         
         # Calculate how close we are
         kg_intrinsic_reward = env.knowledge_graph.absolute_difference(
-            observations.kge_cur_pos.unsqueeze(1),
+            observations.kge_cur_pos,
             answer_tensor,
-        ).norm(dim=-1)
+        ).norm(dim=-1, keepdim=True)
 
-        # TODO: Ensure the that the model stays within range of answer, otherwise set kg_done back to false so intrinsic reward kicks back in.
-        kg_rewards.append(kg_dones*kg_extrinsic_rewards - torch.logical_not(kg_dones)*kg_intrinsic_reward) # Merging positive environment rewards with negative intrinsic ones
+        reward = kg_dones*kg_extrinsic_rewards - torch.logical_not(kg_dones)*kg_intrinsic_reward  # Merging positive environment rewards with negative intrinsic ones
+
+        if num_rollouts > 0: 
+            kg_rewards.append(reward.mean(axis=1))  # (batch_size, num_rollouts, 1) -> (batch_size, 1)
+            
+            log_probs = log_probs.mean(axis=1)      # (batch_size, num_rollouts) -> (batch_size,)
+            entropy = entropy.mean(axis=1)          # (batch_size, num_rollouts) -> (batch_size,)
+        else: 
+            kg_rewards.append(reward)               # (batch_size, 1)
 
         ########################################
         # Log Stuff for across batch
@@ -755,8 +766,6 @@ def test_nav_multihopkg(
     steps_in_episode: int,
     batch_size_test: int,
     verbose: bool,
-    # max_entities: int = None,
-    max_entities: int = 50, # TODO: Make this a parameter in alpha, however using this compromises the MR metric. In literature, 50 is used.
     desc: str = "Testing Batches",
 ):
     # Set in testing mode
@@ -767,17 +776,14 @@ def test_nav_multihopkg(
 
     hits_1 = []
     hits_3 = []
+    hits_5 = []
     hits_10 = []
+    hits_20 = []
     distance = []
-    mr = []
     mrr = []
 
-    num_entities = env.knowledge_graph.entity_embedding.size(0) # considering the whole graph
-
-    if max_entities is None:
-        max_entities = num_entities
-    elif max_entities > num_entities:
-        max_entities = num_entities
+    # Override topk=1
+    topk = 1
 
     with torch.no_grad():
         for sample_offset_idx in tqdm(range(0, len(test_data), batch_size_test), desc=desc, leave=False):
@@ -817,20 +823,35 @@ def test_nav_multihopkg(
                 answer_tensor,
             ).norm(dim=-1).cpu()
 
-            _, entity_indices = env.ann_index_manager_ent.search(observations.kge_cur_pos.detach().cpu(), max_entities)
+            _, entity_indices, distances = env.ann_index_manager_ent.search(observations.kge_cur_pos.detach().cpu(), topk)
+            entity_indices = entity_indices.reshape(answer_tensor.size(0), env.num_rollouts) # throwing away last dim (topk)
+            distances = distances.reshape(answer_tensor.size(0), env.num_rollouts)
 
+            # TODO: Might want to consider log_prob for sorting instead of closest distance to Any Entity
+            # sort distances from smallest to largest
+            sorted_indices = distances.argsort(axis=-1)
+            entity_indices = np.take_along_axis(entity_indices, sorted_indices, axis=-1)
+            distances = np.take_along_axis(distances, sorted_indices, axis=-1)
+
+            # Given that the answer_id_tensor is (batch_size,) find the first instance where answer_id_tensor == entity_indices for entity_indices second dimension
+            answer_ids_tensors = torch.tensor(answer_id).unsqueeze(1)
             results = (entity_indices == answer_ids_tensors)
-            hits_1.append(results[:, :1].any(dim=-1))
-            hits_3.append(results[:, :3].any(dim=-1))
-            hits_10.append(results[:, :10].any(dim=-1))
+            
+            # Check if any True values exist
+            has_match = results.any(axis=-1)  # True if answer found, False otherwise
+            rank = torch.where(
+                has_match,
+                results.float().argmax(axis=-1) + 1,        # Actual rank if found
+                torch.tensor(env.num_rollouts + 1)          # Penalty rank if not found
+            )
 
-            ranks = torch.full((answer_tensor.size(0),), num_entities + 1, dtype=torch.float) # In case we don't find anything, make num_entities + 1 the default rank (pessimitic assumption), using max_entities + 1 is considered too optimistic
+            hits_1.append(rank <= 1)
+            hits_3.append(rank <= 3)
+            hits_5.append(rank <= 5)
+            hits_10.append(rank <= 10)
+            hits_20.append(rank <= 20)
 
-            row_idx, col_idx = torch.nonzero(results, as_tuple=True)                          # get the indices of the found answers, if any
-            ranks[row_idx] = col_idx.float() + 1                                              # Only update ranks where answers are found, otherwise keep the default
-
-            mr.append(ranks)
-            mrr.append((1.0 / ranks))        
+            mrr.append((1.0 / rank))        
 
             distance.append(kg_intrinsic_reward)
 
@@ -839,23 +860,27 @@ def test_nav_multihopkg(
 
     hits_1 = torch.cat(hits_1).float().mean().item()
     hits_3 = torch.cat(hits_3).float().mean().item()
+    hits_5 = torch.cat(hits_5).float().mean().item()
     hits_10 = torch.cat(hits_10).float().mean().item()
-    mr = torch.cat(mr).float().mean().item()
+    hits_20 = torch.cat(hits_20).float().mean().item()
     mrr = torch.cat(mrr).float().mean().item()
     distance = torch.cat(distance).float().mean().item()
 
     if verbose:
         print(f"Test Results:")
         print(f"Test Data Size: {len(test_data)}")
-        print(f"Hits@1: {hits_1:.4f}, Hits@3: {hits_3:.4f}, Hits@10: {hits_10:.4f}")
-        print(f"Mean Rank: {mr:.4f}, Mean Reciprocal Rank: {mrr:.4f}")
+        print(f"Hits@1: {hits_1:.4f}, Hits@3: {hits_3:.4f}, Hits@5: {hits_5:.4f}")
+        print(f"Hits@10: {hits_10:.4f}, Hits@20: {hits_20:.4f}")
+        print(f"Mean Reciprocal Rank: {mrr:.4f}")
         print(f"Mean Distance to Answer: {distance:.4f}")
 
     return {
         "hits_1": hits_1,
         "hits_3": hits_3,
+        "hits_5": hits_5,
         "hits_10": hits_10,
-        "mean_rank": mr,
+        "hits_20": hits_20,
+        # "mean_rank": mr,
         "mean_reciprocal_rank": mrr,
         "distance": distance,
     }
@@ -995,6 +1020,7 @@ def train_nav_multihopkg(
 
         # Set in training mode
         nav_agent.train()
+        env.train()
 
         ##############################
         # Batch Loop

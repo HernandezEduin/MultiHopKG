@@ -213,8 +213,11 @@ class ITLGraphEnvironment(Environment, nn.Module):
         
         device = self.path_encoder.parameters().__next__().device
 
+        # TODO: Pass an argument for test_rollouts instead of hardcoding the test value
         if self.training: self.num_rollouts = self._num_rollouts
-        else: self.num_rollouts = 0
+        # elif not self.training and self._num_rollouts > 0: self.num_rollouts = 100
+        # else: self.num_rollouts = 0
+        else: self.num_rollouts = 100
 
         with torch.no_grad():
             ## Values
