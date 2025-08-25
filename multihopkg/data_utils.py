@@ -960,7 +960,11 @@ def load_qa_data(
     print(f"final_config_name_regex: {final_config_name_regex}")
     compiled_regex = re.compile(final_config_name_regex)
     found_cache = shift_through_cache_data(lookup_path=os.path.dirname(cached_metadata_path), filename_regex=compiled_regex)
-    print(f"found_cache: {found_cache}")
+
+    # TODO: Fix this issue, currently overloading `found_cache`` with the provided `cached_metadata_path`. Current approach forces a recompute regardless of outcome.
+    if os.path.exists(cached_metadata_path):
+        found_cache = cached_metadata_path
+
     if (found_cache is not None) and (not force_recompute):
         computed_time = os.path.getctime(found_cache)
         logger.info(
