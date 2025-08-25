@@ -62,8 +62,8 @@ class ANN_IndexMan:
             exact_computation (bool): If True, initializes an exact L2 search index; if False, initializes an approximate IVF index.
             nlist (int): Number of clusters for the IVF index if exact_computation is False.
         """
-        # Ensure that vectors are in float32 for the sake of faise
-        self.embedding_vectors = embeddings_weigths.detach().cpu().numpy().astype(np.float32)
+        # Ensure that vectors are in float32 for the sake of faiss
+        self.embedding_vectors: np.ndarray = embeddings_weigths.detach().cpu().numpy().astype(np.float32)
         nlist = nlist
 
         if exact_computation:
@@ -97,9 +97,13 @@ class ANN_IndexMan:
         Returns:
             resulting_embeddings (np.ndarray): entity embeddings retrieved using ANN
         """
-        # assert len(target_embeddings.shape) == 2, "Target embeddings must be a 2D array"
         if len(target_embeddings.shape) == 3:
-            target_embeddings = target_embeddings.view(target_embeddings.shape[0], -1)
+            # Reshapes the rollout so that it can be processed in batches (rollouts first, then next batch)
+            batch_size, num_rollouts, embedding_dim = target_embeddings.shape
+            target_embeddings = target_embeddings.view(batch_size * num_rollouts, embedding_dim)
+        else:
+            num_rollouts = 1
+
         assert isinstance(
             target_embeddings, torch.Tensor
         ), "Target embeddings must be a torch.Tensor"
@@ -108,7 +112,6 @@ class ANN_IndexMan:
         if target_embeddings.is_cuda:
             target_embeddings = target_embeddings.cpu()
 
-
         # TODO: Check that we are acutally passing the right shape of input
         distances, indices = self.index.search(target_embeddings, topk)  # type: ignore
 
@@ -116,8 +119,13 @@ class ANN_IndexMan:
         # Get the Actual Embeddings here
         resulting_embeddings = self.embedding_vectors[indices.squeeze(), :]
 
-        return resulting_embeddings, indices
-        # return indices
+        if num_rollouts > 1:
+            # Reshape back to [batch_size, num_rollouts, topk]
+            resulting_embeddings = resulting_embeddings.reshape(batch_size, num_rollouts, topk, embedding_dim)
+            distances = distances.reshape(batch_size, num_rollouts, topk)
+            indices = indices.reshape(batch_size, num_rollouts, topk)
+
+        return resulting_embeddings, indices, distances
 
     def calculate_hits_at_n(
         self, ground_truth: np.ndarray, indices: np.ndarray, topk: int
