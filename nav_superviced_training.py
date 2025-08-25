@@ -102,17 +102,19 @@ def single_hop_supervision(
     nav_agent: ContinuousPolicyGradient,
     env: ITLGraphEnvironment,
     question_embeddings: torch.Tensor,
-    query_ent: List[int],
-    query_rel: List[int],
+    source_ent: List[int],
     answer_id: List[int],
+    paths: List[List[int]],
     steps_in_episode: int,
     adapter_scalar: float = 0.5,
     sigma_scalar: float = 0.1,
     expected_sigma: float = 0.03, # best gueess so far 0.01
 ):
     # === Get batch entities and relations ===
-    head_ids = query_ent
-    rel_ids = query_rel
+    device = question_embeddings.device
+    paths = torch.tensor(paths, dtype=torch.int, device=device) # Shape: (batch, hops, path_length)
+    head_ids = source_ent
+    rel_ids = paths[:, 0, 1] # [batch,]
 
     head_emb = get_embeddings_from_indices(
         env.knowledge_graph.entity_embedding,
@@ -133,7 +135,7 @@ def single_hop_supervision(
     # Note: target action is in radians if using pRotatE
 
     # === Reset env to update current position and projected question ===
-    obs = env.reset(question_embeddings, answer_id, query_ent=query_ent, warmup=True)
+    obs = env.reset(question_embeddings, answer_id, source_ent=source_ent, warmup=True)
 
     # === Compute forward pass ===
     adapter_out = env.q_projected
@@ -157,8 +159,7 @@ def multihop_supervision(
     nav_agent: ContinuousPolicyGradient,
     env: ITLGraphEnvironment,
     question_embeddings: torch.Tensor,
-    query_ent: List[int],
-    query_rel: List[int],
+    source_ent: List[int],
     answer_id: List[int],
     steps_in_episode: int,
     hops: int,
@@ -173,7 +174,7 @@ def multihop_supervision(
     paths = torch.tensor(paths, dtype=torch.int, device=device) # Shape: (batch, hops, path_length)
 
     # === Reset env to update current position and projected question ===
-    obs = env.reset(question_embeddings, answer_id, query_ent=query_ent, warmup=True)
+    obs = env.reset(question_embeddings, answer_id, source_ent=source_ent, warmup=True)
     state = obs.state  # shape: (batch, state_dim)
 
     # === Compute forward pass ===
@@ -207,10 +208,10 @@ def multihop_supervision(
 
 
     # === Losses: Adapter Loss ===
-    # Head entity embeddings (query_ent: list of ints, batch size)
+    # Head entity embeddings (source_ent: list of ints, batch size)
     head_emb = get_embeddings_from_indices(
         env.knowledge_graph.entity_embedding,
-        torch.tensor(query_ent, dtype=torch.int),
+        torch.tensor(source_ent, dtype=torch.int),
     ) # Shape: (batch, embedding_dim)
 
     rel_emb = get_embeddings_from_indices(
@@ -230,8 +231,7 @@ def supervise_models(
     nav_agent: ContinuousPolicyGradient,
     env: ITLGraphEnvironment,
     question_embeddings: torch.Tensor,
-    query_ent: List[int],
-    query_rel: List[int],
+    source_ent: List[int],
     answer_id: List[int],
     steps_in_episode: int,
     hops: List[int] = None,
@@ -258,9 +258,9 @@ def supervise_models(
             nav_agent=nav_agent,
             env=env,
             question_embeddings=question_embeddings,
-            query_ent=query_ent,
-            query_rel=query_rel,
+            source_ent=source_ent,
             answer_id=answer_id,
+            paths=paths,
             steps_in_episode=steps_in_episode,
             adapter_scalar=adapter_scalar,
             sigma_scalar=sigma_scalar,
@@ -273,8 +273,7 @@ def supervise_models(
             nav_agent=nav_agent,
             env=env,
             question_embeddings=question_embeddings,
-            query_ent=query_ent,
-            query_rel=query_rel,
+            source_ent=source_ent,
             answer_id=answer_id,
             steps_in_episode=steps_in_episode,
             hops=hops[0],  # Assuming hops is a list of equal values
@@ -290,8 +289,7 @@ def rollout(
     nav_agent: ContinuousPolicyGradient,
     env: ITLGraphEnvironment,
     questions_embeddings: torch.Tensor,
-    query_ent: List[int],
-    query_rel: List[int],
+    source_ent: List[int],
     answer_id: List[int],
     dev_mode: bool = False,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor], Dict[str, Any]]:
@@ -313,10 +311,8 @@ def rollout(
             The knowledge graph environment that provides observations, rewards, and state transitions.
         questions_embeddings (torch.Tensor): 
             Pre-embedded representations of the questions to be answered. Shape: (batch_size, embedding_dim).
-        query_entity (List[int]): 
+        source_entity (List[int]): 
             A list of relevant entities for each question, represented as lists of entity IDs.
-        query_rel (Listint]): 
-            A list of relevant relations for each question, represented as lists of relation IDs.
         answer_id (List[int]): 
             A list of IDs corresponding to the correct answer entities.
         dev_mode (bool, optional): 
@@ -350,7 +346,7 @@ def rollout(
     observations = env.reset(
         questions_embeddings,
         answer_ent = answer_id,
-        query_ent = query_ent
+        source_ent = source_ent
     )
 
     cur_state = observations.state
@@ -458,13 +454,9 @@ def batch_loop_dev(
 
     # Deconstruct the batch
     questions = mini_batch["Question"].tolist()
-    query_ent = mini_batch["Query-Entity"].tolist()
-    query_rel = mini_batch["Query-Relation"].tolist()
+    source_ent = mini_batch["Source-Entity"].tolist()
     answer_id = mini_batch["Answer-Entity"].tolist()
-    if env.use_kge_question_embedding:
-        question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
-    else:
-        question_embeddings = env.get_llm_embeddings(questions, device)
+    question_embeddings = env.get_llm_embeddings(questions, device)
 
     logger.warning(f"About to go into rollout")
     log_probs, entropies, kg_rewards, eval_extras = rollout(
@@ -472,8 +464,7 @@ def batch_loop_dev(
         nav_agent,
         env,
         question_embeddings,
-        query_ent = query_ent,
-        query_rel = query_rel,
+        source_ent = source_ent,
         answer_id = answer_id,
         dev_mode=True,
     )
@@ -574,23 +565,18 @@ def batch_loop(
 
     # Deconstruct the batch
     questions = mini_batch["Question"].tolist()
-    query_ent = mini_batch["Query-Entity"].tolist()
-    query_rel = mini_batch["Query-Relation"].tolist()
+    source_ent = mini_batch["Source-Entity"].tolist()
     answer_id = mini_batch["Answer-Entity"].tolist()
     hops = mini_batch["Hops"].tolist() if "Hops" in mini_batch.columns else None
     paths = mini_batch["Paths"].tolist() if "Paths" in mini_batch.columns else None
-    if env.use_kge_question_embedding:
-        question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
-    else:
-        question_embeddings = env.get_llm_embeddings(questions, device)
+    question_embeddings = env.get_llm_embeddings(questions, device)
 
     loss = supervise_models(
         steps_in_episode=steps_in_episode,
         nav_agent=nav_agent,
         env=env,
         question_embeddings=question_embeddings,
-        query_ent=query_ent,
-        query_rel=query_rel,
+        source_ent=source_ent,
         answer_id=answer_id,
         hops=hops,
         paths=paths,
@@ -694,8 +680,7 @@ def evaluate_training(
         
         current_evaluations["reference_questions"] = mini_batch["Question"]
         current_evaluations["true_answer"] = mini_batch["Answer"]
-        current_evaluations["query_entity"] = mini_batch["Query-Entity"]
-        current_evaluations["query_relation"] = mini_batch["Query-Relation"]
+        current_evaluations["source_entity"] = mini_batch["Source-Entity"]
         current_evaluations["true_answer_id"] = mini_batch["Answer-Entity"]
 
         # Get the Metrics
@@ -800,13 +785,9 @@ def test_nav_multihopkg(
             
             # Deconstruct the batch
             questions = mini_batch["Question"].tolist()
-            query_ent = mini_batch["Query-Entity"].tolist()
-            query_rel = mini_batch["Query-Relation"].tolist()
+            source_ent = mini_batch["Source-Entity"].tolist()
             answer_id = mini_batch["Answer-Entity"].tolist()
-            if env.use_kge_question_embedding:
-                question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
-            else:
-                question_embeddings = env.get_llm_embeddings(questions, device)
+            question_embeddings = env.get_llm_embeddings(questions, device)
 
             answer_tensor = get_embeddings_from_indices(
                     env.knowledge_graph.entity_embedding,
@@ -817,7 +798,7 @@ def test_nav_multihopkg(
             observations = env.reset(
                 question_embeddings,
                 answer_ent = answer_id,
-                query_ent = query_ent
+                source_ent = source_ent
             )
 
             cur_state = observations.state

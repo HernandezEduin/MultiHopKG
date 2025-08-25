@@ -122,7 +122,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         ), "The question embedding module must be a torch.nn.Module, otherwis no computation graph. You passed a {}".format(
             type(question_embedding_module)
         )
-        self.use_kge_question_embedding = use_kge_question_embedding
+        self.use_kge_question_embedding = use_kge_question_embedding # TODO: Remove this variable later on (including in the args)
 
         self.question_embedding_module = question_embedding_module # TODO: Consider moving to if condition if unused
         if self.use_kge_question_embedding: # use the entity and relation embeddings as the question embedding
@@ -148,6 +148,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             )
         )
 
+    # TODO: Remove this function later on
     def get_kge_question_embedding(self, entities: List[np.ndarray], relations: List[np.ndarray], device: torch.device) -> torch.Tensor:
         # Under the assumption that there is only one relevant entity per question
         relevant_rels_temp = [rels[0] for rels in relations]
@@ -190,14 +191,14 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         return final_embedding
 
-    def reset(self, initial_states_info: torch.Tensor, answer_ent: List[int], query_ent: List[int] = None, warmup: bool = True) -> Observation:
+    def reset(self, initial_states_info: torch.Tensor, answer_ent: List[int], source_ent: List[int] = None, warmup: bool = True) -> Observation:
         """
         Will reset the episode to the initial position
         This will happen by grabbign the initial_states_info embeddings, concatenating them with the centroid and then passing them to the environment
         Args:
             - initial_state_info (torch.Tensor): In this implemntation sit is the initial_states_info
             - answer_ent (List[int]): The answer entity for the current batch
-            - query_ent (List[int]): The relevant entities for the current batch
+            - source_ent (List[int]): The relevant entities for the current batch
         Returnd:
             - postion (torch.Tensor): Position in the graph
             - state (torch.Tensor): Aggregation of states visited so far summarized in a single vector per batch element.
@@ -225,7 +226,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent).detach()               # (batch_size, entity_dim)
             self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device).detach()   # (batch_size, 1)
 
-            init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), query_ent).to(device)             # (batch_size, entity_dim)
+            init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), source_ent).to(device)             # (batch_size, entity_dim)
             self.current_position = init_emb.clone()                                                                            # (batch_size, entity_dim)
 
 
@@ -408,12 +409,12 @@ class ITLGraphEnvironment(Environment, nn.Module):
     def get_random_embedding(self, size: int, relevant_ent: List[int] = None) -> torch.Tensor:
         return self.get_starting_embedding('random', size)
     
-    def get_relevant_embedding(self, size: int, query_entity: List[int] = None) -> torch.Tensor:
+    def get_relevant_embedding(self, size: int, source_entity: List[int] = None) -> torch.Tensor:
         # relevant_ent = torch.tensor([random.choice(sublist) for sublist in relevant_ent], dtype=torch.int)
-        query_entity = torch.tensor(query_entity, dtype=torch.int)
+        source_entity = torch.tensor(source_entity, dtype=torch.int)
     
         # Create more complete representation of state
-        init_emb = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, query_entity)
+        init_emb = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, source_entity)
 
         if init_emb.dim() == 1: init_emb = init_emb.unsqueeze(0)
         assert init_emb.shape[0] == size, "Error! Initial states info and relevant embeddings must have the same batch size."

@@ -146,14 +146,9 @@ def batch_loop_dev(
     # Deconstruct the batch
     questions = mini_batch["Question"].tolist()
     answers = mini_batch["Answer"].tolist()
-    query_ent = mini_batch["Query-Entity"].tolist()
-    query_rel = mini_batch["Query-Relation"].tolist()
+    source_ent = mini_batch["Source-Entity"].tolist()
     answer_id = mini_batch["Answer-Entity"].tolist()
-    # question_embeddings = env.get_llm_embeddings(questions, device)
-    if env.use_kge_question_embedding:
-        question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
-    else:
-        question_embeddings = env.get_llm_embeddings(questions, device)
+    question_embeddings = env.get_llm_embeddings(questions, device)
 
     answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
@@ -166,8 +161,7 @@ def batch_loop_dev(
         env,
         question_embeddings,
         answer_ids_padded_tensor,
-        query_ent = query_ent,
-        query_rel = query_rel,
+        source_ent = source_ent,
         answer_id = answer_id,
         dev_mode=True,
     )
@@ -299,14 +293,9 @@ def batch_loop(
     # Deconstruct the batch
     questions = mini_batch["Question"].tolist()
     answers = mini_batch["Answer"].tolist()
-    query_ent = mini_batch["Query-Entity"].tolist()
-    query_rel = mini_batch["Query-Relation"].tolist()
+    source_ent = mini_batch["Source-Entity"].tolist()
     answer_id = mini_batch["Answer-Entity"].tolist()
-    # question_embeddings = env.get_llm_embeddings(questions, device)
-    if env.use_kge_question_embedding:
-        question_embeddings = env.get_kge_question_embedding(query_ent, query_rel, device) # Shape: (batch, 2*embedding_dim)
-    else:
-        question_embeddings = env.get_llm_embeddings(questions, device)
+    question_embeddings = env.get_llm_embeddings(questions, device)
     
     answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
@@ -318,8 +307,7 @@ def batch_loop(
         env,
         question_embeddings,
         answer_ids_padded_tensor,
-        query_ent = query_ent,
-        query_rel = query_rel,
+        source_ent = source_ent,
         answer_id = answer_id,
     )
 
@@ -485,8 +473,7 @@ def evaluate_training(
         
         current_evaluations["reference_questions"] = mini_batch["Question"]
         current_evaluations["true_answer"] = mini_batch["Answer"]
-        current_evaluations["query_entity"] = mini_batch["Query-Entity"]
-        current_evaluations["query_relation"] = mini_batch["Query-Relation"]
+        current_evaluations["source_entity"] = mini_batch["Source-Entity"]
         current_evaluations["true_answer_id"] = mini_batch["Answer-Entity"]
 
         # Get the Metrics
@@ -951,8 +938,7 @@ def rollout(
     env: ITLGraphEnvironment,
     questions_embeddings: torch.Tensor,
     answers_ids: torch.Tensor,
-    query_ent: List[int],
-    query_rel: List[int],
+    source_ent: List[int],
     answer_id: List[int],
     dev_mode: bool = False,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor], Dict[str, Any]]:
@@ -980,8 +966,6 @@ def rollout(
             Tokenized IDs of the correct answers. Shape: (batch_size, sequence_length).
         relevant_entities (List[List[int]]): 
             A list of relevant entities for each question, represented as lists of entity IDs.
-        relevant_rels (List[List[int]]): 
-            A list of relevant relations for each question, represented as lists of relation IDs.
         answer_id (List[int]): 
             A list of IDs corresponding to the correct answer entities.
         dev_mode (bool, optional): 
@@ -1017,7 +1001,7 @@ def rollout(
     observations = env.reset(
         questions_embeddings,
         answer_ent = answer_id,
-        query_ent = query_ent
+        source_ent = source_ent
     )
 
     cur_state = observations.state

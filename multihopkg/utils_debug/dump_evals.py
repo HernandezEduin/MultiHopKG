@@ -45,8 +45,7 @@ def dump_evaluation_metrics(
         "sampled_actions" in evaluation_metrics_dictionary,
         "reference_questions" in evaluation_metrics_dictionary,
         "true_answer" in evaluation_metrics_dictionary,
-        "query_entity" in evaluation_metrics_dictionary,
-        "query_relation" in evaluation_metrics_dictionary,
+        "source_entity" in evaluation_metrics_dictionary,
         "true_answer_id" in evaluation_metrics_dictionary, 
         "kge_cur_pos" in evaluation_metrics_dictionary,
         "kge_prev_pos" in evaluation_metrics_dictionary,
@@ -105,8 +104,7 @@ def dump_evaluation_metrics(
             kge_dones = evaluation_metrics_dictionary["kg_dones"][:, element_id].squeeze(1)
             
             questions = evaluation_metrics_dictionary["reference_questions"].iloc[element_id]
-            query_entity = evaluation_metrics_dictionary["query_entity"].iloc[element_id]
-            query_relation = evaluation_metrics_dictionary["query_relation"].iloc[element_id]
+            source_entity = evaluation_metrics_dictionary["source_entity"].iloc[element_id]
             answer_id = evaluation_metrics_dictionary["true_answer_id"].iloc[element_id]
             ans_emb = answer_kge_tensor[element_id,0].cpu()
 
@@ -148,21 +146,22 @@ def dump_evaluation_metrics(
             'KGE Context Tokens'
             log_file.write(f"#KGE Evaluation Data ------------\n")
 
-            query_entity_tokens = id2entity[query_entity]
-            log_file.write(f"Query Entity Token: {query_entity_tokens}\n")
+            source_entity_tokens = id2entity[source_entity]
+            log_file.write(f"Source Entity Token: {source_entity_tokens}\n")
 
             if entity2title:
-                entities_names = entity2title[query_entity_tokens]
-                log_file.write(f"Query Entity Names: \n{entities_names}\n")
+                entities_names = entity2title[source_entity_tokens]
+                log_file.write(f"Source Entity Names: \n{entities_names}\n")
                 wandb_steps.append(" , ".join(entities_names))
 
-            query_relation_tokens = id2relations[query_relation]
-            log_file.write(f"Query Relation Token: {query_relation_tokens}\n")
+            # Replace these with the relations from the path if given
+            # query_relation_tokens = id2relations[query_relation]
+            # log_file.write(f"Query Relation Token: {query_relation_tokens}\n")
 
-            if relation2title: 
-                relations_names = relation2title[query_relation_tokens]
-                log_file.write(f"Query Relations Names: \n{relations_names}\n")
-                wandb_steps.append(" -- ".join(relations_names))
+            # if relation2title: 
+            #     relations_names = relation2title[query_relation_tokens]
+            #     log_file.write(f"Query Relations Names: \n{relations_names}\n")
+            #     wandb_steps.append(" -- ".join(relations_names))
 
             log_file.write(f"Answer ID: {answer_id}\n")
             answer_token = id2entity[answer_id]
