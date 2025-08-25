@@ -735,9 +735,17 @@ def process_and_cache_unsuprvised_triviaqa_data(
         'SplitLabel' in new_df.columns and new_df['SplitLabel'].notna().any(),
         'SplitLabel' in new_df.columns and not new_df['SplitLabel'].eq('').all()   # type: ignore
     ])
+    dev_splitted = False
     if override_split and prespecified_splits_avail:
         train_df = new_df[new_df['SplitLabel'] == 'train'].reset_index(drop=True)
-        test_df = new_df[new_df['SplitLabel'] != 'train'].reset_index(drop=True)
+        
+        if 'test' in new_df["SplitLabel"].values and 'dev' in new_df["SplitLabel"].values:
+            test_df = new_df[new_df['SplitLabel'] == 'test'].reset_index(drop=True)
+            dev_df = new_df[new_df['SplitLabel'] == 'dev'].reset_index(drop=True)
+            dev_splitted = True
+        else:
+            test_df = new_df[new_df['SplitLabel'] != 'train'].reset_index(drop=True)
+        
     else:
         new_df = new_df.sample(frac=1).reset_index(drop=True)
         train_df, test_df = train_test_split(new_df, test_size=0.2, random_state=42)
@@ -745,7 +753,7 @@ def process_and_cache_unsuprvised_triviaqa_data(
      # If the test set is too small, use it as dev
     if len(test_df) < 100:
         dev_df = test_df
-    else:
+    elif not dev_splitted:
         dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=42)
 
     if not isinstance(train_df, pd.DataFrame) or not isinstance(dev_df, pd.DataFrame) or not isinstance(test_df, pd.DataFrame):
@@ -869,9 +877,18 @@ def process_and_cache_suprvised_triviaqa_data(
     new_df = new_df.sample(frac=1).reset_index(drop=True) # Shuffle before splitting by label
 
     # Check if splitLabel column has meaningful values to guide the split
+    dev_splitted = False
     if override_split and 'SplitLabel' in new_df.columns and new_df['SplitLabel'].notna().any() and not new_df['SplitLabel'].eq('').all():
         train_df = new_df[new_df['SplitLabel'] == 'train'].reset_index(drop=True)
-        test_df = new_df[new_df['SplitLabel'] != 'train'].reset_index(drop=True)
+        
+        if 'test' in new_df["SplitLabel"].values and 'dev' in new_df["SplitLabel"].values:
+            test_df = new_df[new_df['SplitLabel'] == 'test'].reset_index(drop=True)
+            dev_df = new_df[new_df['SplitLabel'] == 'dev'].reset_index(drop=True)
+            dev_splitted = True
+            if logger: logger.info("Using SplitLabel column for dev/test splitting")
+        else:
+            test_df = new_df[new_df['SplitLabel'] != 'train'].reset_index(drop=True)
+        
         if logger: logger.info(f"Using splitLabel column to split the data into train and test sets.")
     else:
         new_df = new_df.sample(frac=1).reset_index(drop=True)
@@ -881,8 +898,11 @@ def process_and_cache_suprvised_triviaqa_data(
     if len(test_df) < 100:
         dev_df = test_df
         if logger: logger.warning("Test set is too small, using it as dev set!!")
-    else:
+    elif not dev_splitted:
+        # Automatic splitting
         dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=42)
+        if logger:
+            logger.info("Automatically splitting test set into dev/test")
 
     if not isinstance(train_df, pd.DataFrame) or not isinstance(dev_df, pd.DataFrame) or not isinstance(test_df, pd.DataFrame):
         raise RuntimeError("The data was not loaded properly. Please check the data loading code.")
