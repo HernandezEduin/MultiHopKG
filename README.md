@@ -49,7 +49,7 @@ python nav_training.py
 
 For the Supervised-Path Learning Navigation, run
 ```sh
-python nav_superviced_training.py
+python nav_supervised_training.py
 ```
 
 ## Knowledge Graph Embedding Training
