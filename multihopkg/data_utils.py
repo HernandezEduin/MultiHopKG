@@ -778,19 +778,6 @@ def process_and_cache_unsuprvised_triviaqa_data(
     with open(cached_toked_qatriples_metadata_path, "w") as f:
         json.dump(metadata, f)
 
-    # NOTE: Maybe this was simply for debugging?
-    # id2entity = {v: k for k, v in entity2id.items()}
-    # id2relation = {v: k for k, v in relation2id.items()}
-    #
-    # Save the triplets to a file for later use with other algorithms
-    # Ill just remove it 
-    # for name,df in {"train": train_df, "dev": dev_df, "test": test_df}.items():
-    #     triplets = []
-    #     for i, row in df.iterrows():
-    #         triplets.append((id2entity[row['Query-Entity']], id2relation[row['Query-Relation']], id2entity[row['Answer-Entity']]))
-    #     save_triplets = pd.DataFrame(triplets, columns=["head", "relation", "tail"])
-    #     save_triplets.to_csv(cached_split_locations[name].replace(".parquet", f"_{name}_triplets.txt"), sep='\t', index=False, header=False)
-
     return DFSplit(train=train_df, dev=dev_df, test=test_df), metadata
 
 def process_and_cache_suprvised_triviaqa_data(
@@ -832,8 +819,7 @@ def process_and_cache_suprvised_triviaqa_data(
     # !TODO: Make this more flexible and relavant entities and relations be optional features
     questions = csv_df["Question"]
     answers = csv_df["Answer"]
-    query_ent = csv_df["Query-Entity"]
-    query_rel = csv_df["Query-Relation"]
+    source_ent = csv_df["Source-Entity"]
     answer_ent = csv_df["Answer-Entity"]
     paths = extract_literals(csv_df["Paths"]) if 'Paths' in csv_df.columns else None
     splitLabel = csv_df["SplitLabel"] if 'SplitLabel' in csv_df.columns else None
@@ -852,8 +838,7 @@ def process_and_cache_suprvised_triviaqa_data(
     )
 
     # Preparing the KG data by converting text to indices
-    query_ent = query_ent.map(lambda ent: entity2id[ent])
-    query_rel = query_rel.map(lambda rel: relation2id[rel])
+    source_ent = source_ent.map(lambda ent: entity2id[ent])
     answer_ent = answer_ent.map(lambda ent: entity2id[ent])
     if paths is not None:
         paths = paths.map(lambda path: [[entity2id[head], relation2id[rel], entity2id[tail]] for head, rel, tail in path])
@@ -873,7 +858,7 @@ def process_and_cache_suprvised_triviaqa_data(
 
     # Start amalgamating the data into its final form
     # TODO: test set
-    new_df = pd.concat([questions, answers, query_ent, query_rel, answer_ent, paths, hops, splitLabel], axis=1)
+    new_df = pd.concat([questions, answers, source_ent, answer_ent, paths, hops, splitLabel], axis=1)
     new_df = new_df.sample(frac=1).reset_index(drop=True) # Shuffle before splitting by label
 
     # Check if splitLabel column has meaningful values to guide the split
@@ -918,8 +903,7 @@ def process_and_cache_suprvised_triviaqa_data(
         "answer_tokenizer": answer_tokenizer.name_or_path,
         "question_column": "Question",
         "answer_column": "Answer",
-        "query_entities_column": "Query-Entity",
-        "query_relations_column": "Query-Relation",
+        "source_entities_column": "Source-Entity",
         "answer_entity_column": "Answer-Entity",
         "paths_column": "Paths",
         "hops_column": "Hops",
@@ -932,17 +916,6 @@ def process_and_cache_suprvised_triviaqa_data(
 
     with open(cached_toked_qatriples_metadata_path, "w") as f:
         json.dump(metadata, f)
-
-    id2entity = {v: k for k, v in entity2id.items()}
-    id2relation = {v: k for k, v in relation2id.items()}
-
-    # Save the triplets to a file for later use with other algorithms
-    for name,df in {"train": train_df, "dev": dev_df, "test": test_df}.items():
-        triplets = []
-        for i, row in df.iterrows():
-            triplets.append((id2entity[row['Query-Entity']], id2relation[row['Query-Relation']], id2entity[row['Answer-Entity']]))
-        save_triplets = pd.DataFrame(triplets, columns=["head", "relation", "tail"])
-        save_triplets.to_csv(cached_split_locations[name].replace(".parquet", f"_{name}_triplets.txt"), sep='\t', index=False, header=False)
 
     return DFSplit(train=train_df, dev=dev_df, test=test_df), metadata
 
