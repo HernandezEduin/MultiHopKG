@@ -1356,6 +1356,8 @@ def main():
         relation2id=rel2id,
         ann_index_manager_ent=ann_index_manager_ent,
         ann_index_manager_rel=ann_index_manager_rel,
+        num_rollouts=0,
+        num_rollouts_test=args.num_rollouts_test,
         steps_in_episode=args.num_rollout_steps,
         trained_pca=None,
         graph_pca=None,

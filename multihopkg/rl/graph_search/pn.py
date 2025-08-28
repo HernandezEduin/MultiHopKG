@@ -53,6 +53,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         graph_pca,
         graph_annotation: str,
         num_rollouts: int = 0, # Number of trajectories to be used in the environment per question, 0 means 1 trajectory
+        num_rollouts_test: int = 100, 
         use_kge_question_embedding: bool = False,
         epsilon: float = 0.1, # For error margin in the distance, TODO: Must find a better value
         add_transition_state: bool = False, # If True, will include the transition state in the observation
@@ -74,6 +75,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.ann_index_manager_ent = ann_index_manager_ent
         self.ann_index_manager_rel = ann_index_manager_rel
         self._num_rollouts = num_rollouts  # Number of trajectories to be used in the environment per question
+        self._num_rollouts_test = num_rollouts_test
         self.steps_in_episode = steps_in_episode
         self.trained_pca = trained_pca
         self.graph_pca = graph_pca
@@ -215,9 +217,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # TODO: Pass an argument for test_rollouts instead of hardcoding the test value
         if self.training: self.num_rollouts = self._num_rollouts
-        # elif not self.training and self._num_rollouts > 0: self.num_rollouts = 100
-        # else: self.num_rollouts = 0
-        else: self.num_rollouts = 100
+        else: self.num_rollouts = self._num_rollouts_test
 
         with torch.no_grad():
             ## Values

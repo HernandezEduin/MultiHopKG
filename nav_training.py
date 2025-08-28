@@ -1259,6 +1259,7 @@ def main():
         ann_index_manager_ent=ann_index_manager_ent,
         ann_index_manager_rel=ann_index_manager_rel,
         num_rollouts=args.num_rollouts,
+        num_rollouts_test=args.num_rollouts_test,
         steps_in_episode=args.num_rollout_steps,
         trained_pca=None,
         graph_pca=None,
