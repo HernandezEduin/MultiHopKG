@@ -160,16 +160,9 @@ def rollout(
         source_ent = source_ent
     )
 
-    num_rollouts = env.num_rollouts
-
-    answer_tensor = get_embeddings_from_indices(
-            env.knowledge_graph.entity_embedding,
-            torch.tensor(answer_id, dtype=torch.int),
-    ) # (batch, embedding_dim)
-
-    if num_rollouts > 0: answer_tensor = answer_tensor.unsqueeze(1).expand(-1, num_rollouts, -1) # Shape: (batch, num_rollouts, embedding_dim)
-
-    cur_state = observations.state
+    # Copy values and ensure they use gradients during training
+    cur_state = observations.state.requires_grad_(env.training)
+    answer_tensor = env.answer_embeddings.requires_grad_(env.training) # Shape: (batch, num_rollouts, embedding_dim) 
 
     # pn.initialize_path(kg) # TOREM: Unecessasry to ask pn to form it for us.
     states_so_far = []
@@ -177,7 +170,7 @@ def rollout(
 
         # Ask the navigator to navigate, agent is presented state, not position
         # State is meant to summrized path history.
-        sampled_actions, log_probs, entropy, _, _ = nav_agent(cur_state)
+        sampled_actions, log_probs, entropy, _, _ = nav_agent(cur_state) # Sampled Actions (batch, num_rollouts, embedding_dim), Log Prob (batch, num_rollouts)
 
         # TODO: Make sure we are gettign rewards from the environment.
         observations, kg_extrinsic_rewards, kg_dones = env.step(sampled_actions)
@@ -197,13 +190,7 @@ def rollout(
 
         reward = kg_dones*kg_extrinsic_rewards - torch.logical_not(kg_dones)*kg_intrinsic_reward  # Merging positive environment rewards with negative intrinsic ones
 
-        if num_rollouts > 0:
-            kg_rewards.append(reward.mean(axis=1))  # (batch_size, num_rollouts, 1) -> (batch_size, 1)
-            
-            log_probs = log_probs.mean(axis=1)      # (batch_size, num_rollouts) -> (batch_size,)
-            entropy = entropy.mean(axis=1)          # (batch_size, num_rollouts) -> (batch_size,)
-        else:
-            kg_rewards.append(reward)               # (batch_size, 1)
+        kg_rewards.append(reward.squeeze(dim=-1))
 
         ########################################
         # Log Stuff for across batch
@@ -299,41 +286,42 @@ def batch_loop_dev(
     # Calculate Reinforce Objective
     ########################################
 
-    log_probs_t = torch.stack(log_probs).T
-    entropies_t = torch.stack(entropies).T
-    num_steps = log_probs_t.shape[-1]
+    if env.num_rollouts > 0:
+        # Correcting Shape: (num_steps, batch_size, num_rollouts) -> (batch_size, num_steps)
+        log_probs_t = torch.stack(log_probs).mean(axis=-1).T
+        entropies_t = torch.stack(entropies).mean(axis=-1).T
+    else:
+        # Correcting Shape: (num_steps, batch_size) -> (batch_size, num_steps)
+        log_probs_t = torch.stack(log_probs).T
+        entropies_t = torch.stack(entropies).T
+    
+    num_steps = env.steps_in_episode
 
     assert not torch.isnan(log_probs_t).any(), "NaN detected in the log probs (batch_loop_dev). Aborting training."
 
     #-------------------------------------------------------------------------
     'Knowledge Graph Environment Rewards'
 
-    kg_rewards_t = (
-        torch.stack(kg_rewards)
-    ).permute(1,0,2) # Correcting to Shape: (batch_size, num_steps, reward_type)
-    kg_rewards_t = kg_rewards_t.squeeze(2) # Shape: (batch_size, num_steps)
+    if env.num_rollouts > 0:
+        # Correcting Shape: (num_steps, batch_size, num_rollouts) -> (batch_size, num_steps)
+        kg_rewards_t = torch.stack(kg_rewards).mean(axis=-1).T
+    else:
+        # Correcting Shape: (num_steps, batch_size) -> (batch_size, num_steps)
+        kg_rewards_t = torch.stack(kg_rewards).T
 
     assert not torch.isnan(kg_rewards_t).any(), "NaN detected in the kg rewards (batch_loop_dev). Aborting training."
 
     #-------------------------------------------------------------------------
-    'Discount and Merging of Rewards'
+    'Calculate Reinforce Loss'
 
-    # TODO: Check if a weight is needed for combining the rewards
-    gamma = nav_agent.gamma
-    discounted_rewards = torch.zeros_like(kg_rewards_t).to(device) # Shape: (batch_size, num_steps)
-    G = torch.zeros_like(kg_rewards_t[:, 0]).to(device) # Shape: (batch_size, num_steps)
-
-    for t in reversed(range(kg_rewards_t.size(1))):
-        G = kg_rewards_t[:, t] + gamma * G
-        discounted_rewards[:, t] = G
-
-    # Sample-wise normalization of the rewards for stability
-    # discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
-    
-    #--------------------------------------------------------------------------
-    'Loss Calculation'
-
-    pg_loss = -(discounted_rewards * log_probs_t)  - nav_agent.beta * entropies_t # Have to negate it into order to do gradient ascent
+    pg_loss, _ = reinforce_loss(
+        kg_rewards_t, 
+        log_probs_t, 
+        entropies_t, 
+        nav_agent.gamma, 
+        nav_agent.beta, 
+        device
+    )
 
     logger.warning(f"We just left dev rollout")
 
@@ -405,41 +393,42 @@ def batch_loop(
     ########################################
     logger.debug("About to calculate rewards")
 
-    log_probs_t = torch.stack(log_probs).T
-    entropies_t = torch.stack(entropies).T
-    num_steps = log_probs_t.shape[-1]
+    if env.num_rollouts > 0:
+        # Correcting Shape: (num_steps, batch_size, num_rollouts) -> (batch_size, num_steps)
+        log_probs_t = torch.stack(log_probs).mean(axis=-1).T
+        entropies_t = torch.stack(entropies).mean(axis=-1).T
+    else:
+        # Correcting Shape: (num_steps, batch_size) -> (batch_size, num_steps)
+        log_probs_t = torch.stack(log_probs).T
+        entropies_t = torch.stack(entropies).T
+    
+    num_steps = env.steps_in_episode
+
+    assert not torch.isnan(log_probs_t).any(), "NaN detected in the log probs (batch_loop_dev). Aborting training."
 
     #-------------------------------------------------------------------------
     'Knowledge Graph Environment Rewards'
 
-    kg_rewards_t = (
-        torch.stack(kg_rewards)
-    ).permute(1,0,2) # Correcting to Shape: (batch_size, num_steps, reward_type)
-    kg_rewards_t = kg_rewards_t.squeeze(-1) # Shape: (batch_size, num_steps)
+    if env.num_rollouts > 0:
+        # Correcting Shape: (num_steps, batch_size, num_rollouts) -> (batch_size, num_steps)
+        kg_rewards_t = torch.stack(kg_rewards).mean(axis=-1).T
+    else:
+        # Correcting Shape: (num_steps, batch_size) -> (batch_size, num_steps)
+        kg_rewards_t = torch.stack(kg_rewards).T
+
+    assert not torch.isnan(kg_rewards_t).any(), "NaN detected in the kg rewards (batch_loop_dev). Aborting training."
 
     #-------------------------------------------------------------------------
-    'Discount and Merging of Rewards'
+    'Calculate Reinforce Loss'
 
-    # TODO: Check if a weight is needed for combining the rewards
-    gamma = nav_agent.gamma
-    discounted_rewards = torch.zeros_like(kg_rewards_t).to(device) # Shape: (batch_size, num_steps)
-    G = torch.zeros_like(kg_rewards_t[:, 0]).to(device) # Shape: (batch_size, num_steps)
-
-    for t in reversed(range(kg_rewards_t.size(1))):
-        G = kg_rewards_t[:, t] + gamma * G
-        discounted_rewards[:, t] = G
-
-    # discounted_rewards[:,-1] += kg_rewards_t[:,-1]
-    # for t in reversed(range(num_steps - 1)):
-    #     discounted_rewards[:,t] += gamma * (kg_rewards_t[:,t + 1])
-
-    # Sample-wise normalization of the rewards for stability
-    # discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
-
-    #--------------------------------------------------------------------------
-    'Loss Calculation'
-
-    pg_loss = -(discounted_rewards * log_probs_t) - nav_agent.beta * entropies_t # Have to negate it into order to do gradient ascent
+    pg_loss, discounted_rewards = reinforce_loss(
+        kg_rewards_t, 
+        log_probs_t, 
+        entropies_t, 
+        nav_agent.gamma, 
+        nav_agent.beta, 
+        device
+    )
 
     if torch.isnan(pg_loss).any():
         print("Detected NaN in pg_loss")
@@ -452,6 +441,35 @@ def batch_loop(
 
 
     return pg_loss, eval_extras
+
+def reinforce_loss(
+    reward: torch.Tensor, 
+    log_prob: torch.Tensor, 
+    entropies: torch.Tensor, 
+    gamma: float, beta: float, 
+    device = None
+) -> torch.Tensor:
+    #-------------------------------------------------------------------------
+    'Discount and Merging of Rewards'
+    discounted_rewards = torch.zeros_like(reward).to(device) # Shape: (batch_size, num_steps)
+    G = torch.zeros_like(reward[:, 0]).to(device) # Shape: (batch_size, num_steps)
+
+    for t in reversed(range(reward.size(1))):
+        G = reward[:, t] + gamma * G
+        discounted_rewards[:, t] = G
+
+    # discounted_rewards[:,-1] += reward[:,-1]
+    # for t in reversed(range(num_steps - 1)):
+    #     discounted_rewards[:,t] += gamma * (kg_rewards_t[:,t + 1])
+
+    # Sample-wise normalization of the rewards for stability
+    # discounted_rewards = (discounted_rewards - discounted_rewards.mean(axis=-1)[:, torch.newaxis]) / (discounted_rewards.std(axis=-1)[:, torch.newaxis] + 1e-8)
+
+    #--------------------------------------------------------------------------
+    'Loss Calculation'
+
+    pg_loss = -(discounted_rewards * log_prob) - beta * entropies # Have to negate it into order to do gradient ascent
+    return pg_loss, discounted_rewards
 
 def evaluate_training(
     env: ITLGraphEnvironment,
@@ -652,11 +670,6 @@ def test_nav_multihopkg(
             answer_id = mini_batch["Answer-Entity"].tolist()
             question_embeddings = env.get_llm_embeddings(questions, device)
 
-            answer_tensor = get_embeddings_from_indices(
-                    env.knowledge_graph.entity_embedding,
-                    torch.tensor(answer_id, dtype=torch.int),
-            ).unsqueeze(1).expand(-1, env.num_rollouts, -1) # Shape: (batch, num_rollouts, embedding_dim)
-
             # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
             observations = env.reset(
                 question_embeddings,
@@ -665,6 +678,7 @@ def test_nav_multihopkg(
             )
 
             cur_state = observations.state
+            answer_tensor = env.answer_embeddings # Shape: (batch, num_rollouts, embedding_dim)
 
             path_log_prob = torch.zeros((len(answer_id), env.num_rollouts), dtype=torch.float).to(device)
             for t in range(steps_in_episode):
