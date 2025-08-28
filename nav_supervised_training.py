@@ -1376,6 +1376,7 @@ def main():
         graph_annotation=None,
         nav_start_emb_type=args.nav_start_emb_type,
         epsilon = args.nav_epsilon_error,
+        use_ann_reward = args.use_ann_reward,
         use_kge_question_embedding=args.use_kge_question_embedding,
         add_transition_state=args.add_transition_state
     ).to(args.device)

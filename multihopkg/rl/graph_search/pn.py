@@ -56,6 +56,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         num_rollouts_test: int = 100, 
         use_kge_question_embedding: bool = False,
         epsilon: float = 0.1, # For error margin in the distance, TODO: Must find a better value
+        use_ann_reward: bool = True, # If True, will use ANN to find the closest entity and give reward based on that
         add_transition_state: bool = False, # If True, will include the transition state in the observation
     ):
         super(ITLGraphEnvironment, self).__init__()
@@ -136,6 +137,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.answer_found = None       # This is a flag to denote if the answer has been already been found (batch_size, 1)
         self.epsilon = epsilon                 # This is the error margin in the distance for finding the answer
         self.add_transition_state = add_transition_state # If True, will include the observation triplet in the state
+        self.use_ann_reward = use_ann_reward    # If True, it will use ANN for extrinsic reward
 
         # (self.W1, self.W2, self.W1Dropout, self.W2Dropout, self.path_encoder, self.concat_projector) = (
         # (self.concat_projector, self.W2, self.W1Dropout, self.W2Dropout, _) = (
@@ -228,6 +230,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             # get the embeddings of the answer entities
             self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent).detach()               # (batch_size, entity_dim)
             self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device).detach()   # (batch_size, 1)
+            self.answer_ids = torch.tensor(answer_ent).unsqueeze(1).to(self.answer_embeddings.device).detach()                  # (batch_size, 1)
 
             init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), source_ent).to(device)             # (batch_size, entity_dim)
             self.current_position = init_emb.clone()                                                                            # (batch_size, entity_dim)
@@ -249,6 +252,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             self.q_projected = self.q_projected.unsqueeze(1).expand(-1, self.num_rollouts, -1)                      # (batch_size, num_rollouts, entity_dim + relation_dim)
             self.current_questions_emb = self.current_questions_emb.unsqueeze(1).expand(-1, self.num_rollouts, -1)  # (batch_size, num_rollouts, text_dim)
             self.current_position = self.current_position.unsqueeze(1).expand(-1, self.num_rollouts, -1)            # (batch_size, num_rollouts, entity_dim)
+            self.answer_ids = self.answer_ids.unsqueeze(1).expand(-1, self.num_rollouts, -1)                        # (batch_size, num_rollouts, 1)
             self.answer_embeddings = self.answer_embeddings.unsqueeze(1).expand(-1, self.num_rollouts, -1)          # (batch_size, num_rollouts, entity_dim)
             self.answer_found = self.answer_found.unsqueeze(1).expand(-1, self.num_rollouts, -1)                    # (batch_size, num_rollouts, 1)
             init_emb = init_emb.unsqueeze(1).expand(-1, self.num_rollouts, -1)                                      # (batch_size, num_rollouts, entity_dim)
@@ -314,11 +318,17 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # No gradients are calculated here
         with torch.no_grad():
-            diff = self.knowledge_graph.absolute_difference(self.answer_embeddings, self.current_position) # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
-            
-            found_ans = torch.norm(diff, dim=-1, keepdim=True) < self.epsilon   # (batch_size, 1) or (batch_size, num_rollouts, 1))
-            self.answer_found = torch.logical_or(self.answer_found, found_ans)  # (batch_size, 1) or (batch_size, num_rollouts, 1)
-            extrinsic_reward = found_ans.float()                                # (batch_size, 1) or (batch_size, num_rollouts, 1)
+            if self.use_ann_reward:
+                _, entity_indices, _ = self.ann_index_manager_ent.search(self.current_position.detach().cpu(), 1)
+                entity_indices = torch.tensor(entity_indices, dtype=torch.int).to(self.answer_ids.device) # (batch_size, 1) or (batch_size, num_rollouts, 1)
+                self.answer_found = (entity_indices == self.answer_ids)
+                extrinsic_reward = self.answer_found.float().to(self.answer_ids.device)
+            else:
+                diff = self.knowledge_graph.absolute_difference(self.answer_embeddings, self.current_position) # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
+                
+                found_ans = torch.norm(diff, dim=-1, keepdim=True) < self.epsilon   # (batch_size, 1) or (batch_size, num_rollouts, 1))
+                self.answer_found = torch.logical_or(self.answer_found, found_ans)  # (batch_size, 1) or (batch_size, num_rollouts, 1)
+                extrinsic_reward = found_ans.float()                                # (batch_size, 1) or (batch_size, num_rollouts, 1)
 
 
         ########################################
