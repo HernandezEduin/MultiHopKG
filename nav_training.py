@@ -635,7 +635,7 @@ def test_nav_multihopkg(
     hits_5 = []
     hits_10 = []
     hits_20 = []
-    distance = []
+    ans_distance = []
     mr = []
     mrr = []
 
@@ -668,7 +668,7 @@ def test_nav_multihopkg(
 
             path_log_prob = torch.zeros((len(answer_id), env.num_rollouts), dtype=torch.float).to(device)
             for t in range(steps_in_episode):
-                sampled_actions, log_prob, _, _, _ = nav_agent(cur_state)
+                sampled_actions, log_prob, _, _, _ = nav_agent(cur_state) # Sampled Actions (batch, num_rollouts, embedding_dim), Log Prob (batch, num_rollouts)
                 observations, _, _ = env.step(sampled_actions)
                 cur_state = observations.state
 
@@ -682,10 +682,9 @@ def test_nav_multihopkg(
                 answer_tensor,
             ).norm(dim=-1).cpu() # Shape: (batch, num_rollouts)
 
-            _, entity_indices, distances = env.ann_index_manager_ent.search(observations.kge_cur_pos.detach().cpu(), topk)
+            _, entity_indices, distances = env.ann_index_manager_ent.search(observations.kge_cur_pos.detach().cpu(), topk) # (batch, num_rollouts, topk)
             entity_indices = entity_indices.reshape(answer_tensor.size(0), env.num_rollouts) # throwing away last dim (topk)
             distances = distances.reshape(answer_tensor.size(0), env.num_rollouts)
-
 
             # TODO: Might want to consider log_prob for sorting instead of closest distance to Any Entity
             # sort distances from smallest to largest
@@ -716,7 +715,7 @@ def test_nav_multihopkg(
             mr.append(rank)
             mrr.append(1.0 / rank)   
 
-            distance.append(kg_intrinsic_reward)
+            ans_distance.append(kg_intrinsic_reward)
 
             del entity_indices
             del results
@@ -728,7 +727,7 @@ def test_nav_multihopkg(
     hits_20 = torch.cat(hits_20).float().mean().item()
     mr = torch.cat(mr).float().mean().item()
     mrr = torch.cat(mrr).float().mean().item()
-    distance = torch.cat(distance).float().mean().item()
+    ans_distance = torch.cat(ans_distance).float().mean().item()
 
     if verbose:
         print(f"Test Results:")
@@ -736,7 +735,7 @@ def test_nav_multihopkg(
         print(f"Hits@1: {hits_1:.4f}, Hits@3: {hits_3:.4f}, Hits@5: {hits_5:.4f}")
         print(f"Hits@10: {hits_10:.4f}, Hits@20: {hits_20:.4f}")
         print(f"Mean Rank: {mr:.4f}, Mean Reciprocal Rank: {mrr:.4f}")
-        print(f"Mean Distance to Answer: {distance:.4f}")
+        print(f"Mean Distance to Answer: {ans_distance:.4f}")
 
     return {
         "hits_1": hits_1,
@@ -746,7 +745,7 @@ def test_nav_multihopkg(
         "hits_20": hits_20,
         "mean_rank": mr,
         "mean_reciprocal_rank": mrr,
-        "distance": distance,
+        "distance": ans_distance,
     }
 
 def train_nav_multihopkg(
