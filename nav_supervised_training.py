@@ -780,6 +780,7 @@ def test_nav_multihopkg(
     hits_10 = []
     hits_20 = []
     distance = []
+    mr = []
     mrr = []
 
     # Override topk=1
@@ -798,7 +799,7 @@ def test_nav_multihopkg(
             answer_tensor = get_embeddings_from_indices(
                     env.knowledge_graph.entity_embedding,
                     torch.tensor(answer_id, dtype=torch.int),
-            ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
+            ).unsqueeze(1).expand(-1, env.num_rollouts, -1) # Shape: (batch, num_rollouts, embedding_dim)
 
             # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
             observations = env.reset(
@@ -809,19 +810,21 @@ def test_nav_multihopkg(
 
             cur_state = observations.state
 
-            answer_ids_tensors = torch.tensor(answer_id).unsqueeze(1)
+            path_log_prob = torch.zeros((len(answer_id), env.num_rollouts), dtype=torch.float).to(device)
             for t in range(steps_in_episode):
-                sampled_actions, _, _, _, _ = nav_agent(cur_state)
+                sampled_actions, log_prob, _, _, _ = nav_agent(cur_state)
                 observations, _, _ = env.step(sampled_actions)
                 cur_state = observations.state
+
+                path_log_prob += log_prob
 
             # TODO: Evaluate at every step,
             # current evaluation is at the end of the episode
 
             kg_intrinsic_reward = env.knowledge_graph.absolute_difference(
-                observations.kge_cur_pos.unsqueeze(1),
+                observations.kge_cur_pos,
                 answer_tensor,
-            ).norm(dim=-1).cpu()
+            ).norm(dim=-1).cpu() # Shape: (batch, num_rollouts)
 
             _, entity_indices, distances = env.ann_index_manager_ent.search(observations.kge_cur_pos.detach().cpu(), topk)
             entity_indices = entity_indices.reshape(answer_tensor.size(0), env.num_rollouts) # throwing away last dim (topk)
@@ -829,21 +832,22 @@ def test_nav_multihopkg(
 
             # TODO: Might want to consider log_prob for sorting instead of closest distance to Any Entity
             # sort distances from smallest to largest
-            sorted_indices = distances.argsort(axis=-1)
+            # sorted_indices = distances.argsort(axis=-1)
+            sorted_indices = (-path_log_prob).cpu().numpy().argsort(axis=-1)  # Sort by log_prob descending
             entity_indices = np.take_along_axis(entity_indices, sorted_indices, axis=-1)
             distances = np.take_along_axis(distances, sorted_indices, axis=-1)
 
             # Given that the answer_id_tensor is (batch_size,) find the first instance where answer_id_tensor == entity_indices for entity_indices second dimension
             answer_ids_tensors = torch.tensor(answer_id).unsqueeze(1)
             results = (entity_indices == answer_ids_tensors)
-            
+
             # Check if any True values exist
             has_match = results.any(axis=-1)  # True if answer found, False otherwise
             rank = torch.where(
                 has_match,
                 results.float().argmax(axis=-1) + 1,        # Actual rank if found
                 torch.tensor(env.num_rollouts + 1)          # Penalty rank if not found
-            )
+            )            
 
             hits_1.append(rank <= 1)
             hits_3.append(rank <= 3)
@@ -851,6 +855,7 @@ def test_nav_multihopkg(
             hits_10.append(rank <= 10)
             hits_20.append(rank <= 20)
 
+            mr.append(rank)
             mrr.append((1.0 / rank))        
 
             distance.append(kg_intrinsic_reward)
@@ -863,6 +868,7 @@ def test_nav_multihopkg(
     hits_5 = torch.cat(hits_5).float().mean().item()
     hits_10 = torch.cat(hits_10).float().mean().item()
     hits_20 = torch.cat(hits_20).float().mean().item()
+    mr = torch.cat(mr).float().mean().item()
     mrr = torch.cat(mrr).float().mean().item()
     distance = torch.cat(distance).float().mean().item()
 
@@ -871,7 +877,7 @@ def test_nav_multihopkg(
         print(f"Test Data Size: {len(test_data)}")
         print(f"Hits@1: {hits_1:.4f}, Hits@3: {hits_3:.4f}, Hits@5: {hits_5:.4f}")
         print(f"Hits@10: {hits_10:.4f}, Hits@20: {hits_20:.4f}")
-        print(f"Mean Reciprocal Rank: {mrr:.4f}")
+        print(f"Mean Rank: {mr:.4f}, Mean Reciprocal Rank: {mrr:.4f}")
         print(f"Mean Distance to Answer: {distance:.4f}")
 
     return {
@@ -880,7 +886,7 @@ def test_nav_multihopkg(
         "hits_5": hits_5,
         "hits_10": hits_10,
         "hits_20": hits_20,
-        # "mean_rank": mr,
+        "mean_rank": mr,
         "mean_reciprocal_rank": mrr,
         "distance": distance,
     }
