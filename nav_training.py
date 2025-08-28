@@ -679,6 +679,7 @@ def test_nav_multihopkg(
 
             cur_state = observations.state
             answer_tensor = env.answer_embeddings # Shape: (batch, num_rollouts, embedding_dim)
+            answer_ids_tensors = env.answer_ids.cpu().squeeze(-1) # Shape: (batch, num_rollouts)
 
             path_log_prob = torch.zeros((len(answer_id), env.num_rollouts), dtype=torch.float).to(device)
             for t in range(steps_in_episode):
@@ -708,8 +709,7 @@ def test_nav_multihopkg(
             entity_indices = np.take_along_axis(entity_indices, sorted_indices, axis=-1)
             distances = np.take_along_axis(distances, sorted_indices, axis=-1)
 
-            # Given that the answer_id_tensor is (batch_size,) find the first instance where answer_id_tensor == entity_indices for entity_indices second dimension
-            answer_ids_tensors = torch.tensor(answer_id).unsqueeze(1)
+            # Find the first instance where answer_id_tensor == entity_indices for entity_indices second dimension
             results = (entity_indices == answer_ids_tensors)
             
             # Check if any True values exist
