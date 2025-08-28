@@ -105,21 +105,20 @@ def single_hop_supervision(
     source_ent: List[int],
     answer_id: List[int],
     paths: List[List[int]],
-    steps_in_episode: int,
     adapter_scalar: float = 0.5,
     sigma_scalar: float = 0.1,
     expected_sigma: float = 0.03, # best gueess so far 0.01
+    noise_scale: float = 0.5,
 ):
     # === Get batch entities and relations ===
     device = question_embeddings.device
     paths = torch.tensor(paths, dtype=torch.int, device=device) # Shape: (batch, hops, path_length)
-    head_ids = source_ent
+    
+    # === Reset env to update current position and projected question ===
+    obs = env.reset(question_embeddings, answer_id, source_ent=source_ent, warmup=True)
+    
     rel_ids = paths[:, 0, 1] # [batch,]
-
-    head_emb = get_embeddings_from_indices(
-        env.knowledge_graph.entity_embedding,
-        torch.tensor(head_ids, dtype=torch.int),
-    ) # Shape: (batch, embedding_dim)
+    head_emb = obs.kge_cur_pos
 
     rel_emb  = get_embeddings_from_indices(
         env.knowledge_graph.relation_embedding,
@@ -131,11 +130,15 @@ def single_hop_supervision(
         torch.tensor(answer_id, dtype=torch.int),
     ) # Shape: (batch, embedding_dim)
 
-    target_action = env.knowledge_graph.difference(head_emb, tail_emb) # Ideal translation vector
-    # Note: target action is in radians if using pRotatE
+    noise = torch.randn_like(tail_emb) * noise_scale
 
-    # === Reset env to update current position and projected question ===
-    obs = env.reset(question_embeddings, answer_id, source_ent=source_ent, warmup=True)
+    if env.num_rollouts > 0:
+        rel_emb = rel_emb.unsqueeze(1).expand(-1, env.num_rollouts, -1) # Shape: (batch, num_rollouts, embedding_dim)
+        tail_emb = tail_emb.unsqueeze(1).expand(-1, env.num_rollouts, -1) # Shape: (batch, num_rollouts, embedding_dim)
+        noise = noise.unsqueeze(1).expand(-1, env.num_rollouts, -1) # Shape: (batch, num_rollouts, embedding_dim)
+
+    target_action = env.knowledge_graph.difference(head_emb + noise, tail_emb) # Ideal translation vector
+    # Note: target action is in radians if using pRotatE
 
     # === Compute forward pass ===
     adapter_out = env.q_projected
@@ -161,12 +164,12 @@ def multihop_supervision(
     question_embeddings: torch.Tensor,
     source_ent: List[int],
     answer_id: List[int],
-    steps_in_episode: int,
     hops: int,
     paths: List[List[int]],
     adapter_scalar: float = 0.5,
     sigma_scalar: float = 0.1,
     expected_sigma: float = 0.03, # best gueess so far 0.01
+    noise_scale: float = 0.5
 ):
 
     # TODO: Improve paths in dataloader
@@ -192,8 +195,14 @@ def multihop_supervision(
             tail_ids,
         ) # Shape: (batch, embedding_dim)
 
+        noise = torch.randn_like(tail_emb_step) * noise_scale
+
+        if env.num_rollouts > 0:
+            tail_emb_step = tail_emb_step.unsqueeze(1).expand(-1, env.num_rollouts, -1) # Shape: (batch, num_rollouts, embedding_dim)
+            noise = noise.unsqueeze(1).expand(-1, env.num_rollouts, -1) # Shape: (batch, num_rollouts, embedding_dim)
+
         # Target action: vector from current to next entity
-        target_action = env.knowledge_graph.difference(obs.kge_cur_pos, tail_emb_step) # Ideal translation vector
+        target_action = env.knowledge_graph.difference(obs.kge_cur_pos + noise, tail_emb_step) # Ideal translation vector
 
         # Forward policy
         _, _, _, mu, sigma = nav_agent(state)
@@ -214,14 +223,23 @@ def multihop_supervision(
         torch.tensor(source_ent, dtype=torch.int),
     ) # Shape: (batch, embedding_dim)
 
-    rel_emb = get_embeddings_from_indices(
-        env.knowledge_graph.relation_embedding,
-        path_ids[:,1],
-    ) # Shape: (batch, embedding_dim)
+    # Average the relationships in the path
+    rel_embs = []
+    for step in range(hops):
+        rel_ids = paths[:, step, 1]
+        rel_emb = get_embeddings_from_indices(
+            env.knowledge_graph.relation_embedding,
+            rel_ids,
+        ) # Shape: (batch, embedding_dim)
+        rel_embs.append(rel_emb)
+    rel_emb = torch.mean(torch.stack(rel_embs, dim=0), dim=0) # Shape: (batch, embedding_dim)
 
     query_emb = torch.cat(
         [head_emb, rel_emb], dim=-1
     )
+
+    if env.num_rollouts > 0:
+        query_emb = query_emb.unsqueeze(1).expand(-1, env.num_rollouts, -1) # Shape: (batch, num_rollouts, adapter_dim)
 
     adapter_loss = nn.functional.mse_loss(adapter_out, query_emb)
 
@@ -239,6 +257,7 @@ def supervise_models(
     adapter_scalar: float = 0.5,
     sigma_scalar: float = 0.1,
     expected_sigma: float = 0.03, # best gueess so far 0.01
+    noise_scale: float = 0.5
 ):
     """
     Warmup step to train Residual Adapter and Stochastic Policy using supervised targets:
@@ -261,10 +280,10 @@ def supervise_models(
             source_ent=source_ent,
             answer_id=answer_id,
             paths=paths,
-            steps_in_episode=steps_in_episode,
             adapter_scalar=adapter_scalar,
             sigma_scalar=sigma_scalar,
             expected_sigma=expected_sigma,
+            noise_scale=noise_scale,
         )
     
     else:
@@ -275,12 +294,12 @@ def supervise_models(
             question_embeddings=question_embeddings,
             source_ent=source_ent,
             answer_id=answer_id,
-            steps_in_episode=steps_in_episode,
             hops=hops[0],  # Assuming hops is a list of equal values
             paths=paths,
             adapter_scalar=adapter_scalar,
             sigma_scalar=sigma_scalar,
             expected_sigma=expected_sigma,
+            noise_scale=noise_scale,
         )
 
 def rollout(
@@ -521,6 +540,7 @@ def batch_loop(
     adapter_scalar: float = 0.5,
     sigma_scalar: float = 0.1,
     expected_sigma: float = 0.03, # best gueess so far 0.01
+    noise_scale: float = 0.5,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
     Executes a batch loop for training the navigation agent.
@@ -581,6 +601,7 @@ def batch_loop(
         adapter_scalar=adapter_scalar,
         sigma_scalar=sigma_scalar,
         expected_sigma=expected_sigma,
+        noise_scale=noise_scale,
     )
     return loss, {}
 
@@ -924,6 +945,7 @@ def train_nav_multihopkg(
     adapter_scalar: float,
     sigma_scalar: float,
     expected_sigma: float,
+    noise_scale: float,
     wandb_on: bool,
     timestamp: str,
 ):
@@ -1063,6 +1085,7 @@ def train_nav_multihopkg(
                 adapter_scalar=adapter_scalar,
                 sigma_scalar=sigma_scalar,
                 expected_sigma=expected_sigma,
+                noise_scale=noise_scale,
             )
 
             if torch.isnan(mse_loss).any():
@@ -1368,7 +1391,7 @@ def main():
         relation2id=rel2id,
         ann_index_manager_ent=ann_index_manager_ent,
         ann_index_manager_rel=ann_index_manager_rel,
-        num_rollouts=0,
+        num_rollouts=args.num_rollouts,
         num_rollouts_test=args.num_rollouts_test,
         steps_in_episode=args.num_rollout_steps,
         trained_pca=None,
@@ -1442,6 +1465,7 @@ def main():
         adapter_scalar=args.supervised_adapter_scalar,
         sigma_scalar=args.supervised_sigma_scalar,
         expected_sigma=args.supervised_expected_sigma,
+        noise_scale=args.supervised_noise_scale,
         wandb_on=args.wandb,
         timestamp=timestamp,
     )
