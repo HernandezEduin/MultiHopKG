@@ -1133,7 +1133,7 @@ def main():
     global wandb_run
 
     local_time = time.localtime()
-    timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+    timestamp = time.strftime("%Y%m%d_%H%M%S", local_time)
     
     if args.wandb:
         args.wr_name = f"{args.wandb_project_name}_{'rl'}_{timestamp}"
