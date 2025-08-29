@@ -74,7 +74,7 @@ def get_args() -> argparse.Namespace:
     'Knowledge Graph Embedding Model'
     ap.add_argument('--model', type=str, default='pRotatE', help='Embedding model used for KG representation (default: pRotatE)')
     ap.add_argument('--trained_model_path', type=str, default="./models/protatE_FB15k/", help='Path to pre-trained embedding model directory')
-    ap.add_argument('--use_ann_reward', type=str, default=True, help='If True, will use ANN to find the closest entity and give extrinsic reward based on that (default: True)')
+    ap.add_argument('--use_ann_reward', action='store_true', help='If True, will use ANN to find the closest entity and give extrinsic reward based on that (default: True)')
 
     'Navigation Agent Settings'
     ap.add_argument('--nav_start_emb_type', type=str, default="centroid", help="Initial navigation point: 'centroid', 'random', or 'relevant'")
