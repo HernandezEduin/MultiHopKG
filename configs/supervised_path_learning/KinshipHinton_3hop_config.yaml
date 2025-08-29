@@ -1,0 +1,27 @@
+# hit@1 = 0.61538
+batch_size: 3
+batch_size_dev: 8
+beta: 0.06509293192185762
+cached_QAMetaData_path: "./.cache/itl/kinship_hinton_qa_3hop.json"
+data_dir: "data/KinshipHinton"
+epochs: 12
+learning_rate: 0.00188589
+model: "TransE"
+nav_epsilon_error: 1
+nav_epsilon_metric: "l2"
+nav_start_emb_type: "relevant"
+node_data_key: ""
+node_data_path: ""
+num_rollout_steps: 5
+num_rollouts: 8
+preferred_config: ""
+raw_QAData_path: "data/KinshipHinton/kinship_hinton_qa_3hop.csv"
+relationship_data_key: ""
+relationship_data_path: ""
+rl_gamma: 0.971871586573033
+seed: 420
+supervised_adapter_scalar: 0.020144
+supervised_expected_sigma: 0.000013
+supervised_noise_scale: 0.003074
+supervised_sigma_scalar: 0.000014
+trained_model_path: "models/TransE_KinshipHinton_dim12"

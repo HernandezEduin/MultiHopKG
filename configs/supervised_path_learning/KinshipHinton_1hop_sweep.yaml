@@ -5,11 +5,12 @@ method: bayes
 command:
   - ${env}
   - python
-  - nav_superviced_training.py
+  - nav_supervised_training.py
   - --preferred_config=""
   - --seed=420
+  - --use_ann_reward
   - --wandb
-  - --wr_notes=1-hop task - Navigation Agent for MultiHopKG with Supervised Learning
+  - --wr_notes=1-hop task - Navigation Agent for MultiHopKG with Supervised Learning (NEW)
   - --wandb_project=kinship-hinton-multihop  # Your wandb project name
 
 metric:
@@ -18,9 +19,10 @@ metric:
 
 parameters:
   learning_rate:
-    distribution: log_uniform_values
-    min: 1e-8
-    max: 1e-1
+    distribution: q_log_uniform_values
+    q: !!float 1e-08
+    min: !!float 1e-8
+    max: !!float 1e-1
   rl_gamma:
     distribution: uniform
     min: 0.9
@@ -31,17 +33,25 @@ parameters:
     max: 0.1
     
   supervised_adapter_scalar:
-    distribution: log_uniform_values
-    min: 1e-6
-    max: 1e0
+    distribution: q_log_uniform_values
+    q: !!float 1e-06
+    min: !!float 1e-6
+    max: !!float 1e0
   supervised_sigma_scalar:
-    distribution: log_uniform_values
-    min: 1e-6
-    max: 1e0
+    distribution: q_log_uniform_values
+    q: !!float 1e-06
+    min: !!float 1e-6
+    max: !!float 1e0
   supervised_expected_sigma:
-    distribution: log_uniform_values
-    min: 1e-6
-    max: 1e0
+    distribution: q_log_uniform_values
+    q: !!float 1e-06
+    min: !!float 1e-6
+    max: !!float 1e0
+  supervised_noise_scale:
+    distribution: q_log_uniform_values
+    q: !!float 1e-06
+    min: !!float 1e-6
+    max: !!float 1e0
 
   epochs:
     distribution: q_log_uniform_values
@@ -49,7 +59,7 @@ parameters:
     min: 10
     max: 150  
   num_rollouts:
-    value: 0
+    values: [0, 2, 4, 8, 16]
   num_rollout_steps:
     values: [1, 2, 3, 4]
 
@@ -85,3 +95,4 @@ parameters:
     value: relevant
   nav_epsilon_error: 
     value: 1.00
+  
