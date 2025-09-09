@@ -25,3 +25,4 @@ supervised_expected_sigma: 0.000298
 supervised_noise_scale: 0.04964
 supervised_sigma_scalar: 0.000021
 trained_model_path: "models/TransE_KinshipHinton_dim12"
+use_ann_reward: true
