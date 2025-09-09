@@ -47,6 +47,8 @@ def parse_args(args=None):
     parser.add_argument('--countries', action='store_true', help='Use Countries S1/S2/S3 datasets')
     parser.add_argument('--regions', type=int, nargs='+', default=None, 
                         help='Region Id for Countries S1/S2/S3 datasets, DO NOT MANUALLY SET')
+    parser.add_argument('-f', '--full_graph', action='store_true',
+                         help='Use the full graph (train + dev + test) dataset for training')
     
     parser.add_argument('--data_path', type=str, default=None)
     parser.add_argument('--model', default='TransE', type=str)
@@ -308,6 +310,10 @@ def main(args):
         'head_neighborhood_rel_constraints': head_neighborhood_rel_constraints,
         'tail_neighborhood_rel_constraints': tail_neighborhood_rel_constraints
     }
+
+    if args.full_graph and args.do_train:
+        logging.info('Using full graph for training')
+        train_triples = all_true_triples
 
     # Logging before initializing the model
     if args.autoencoder_flag and not args.double_relation_embedding:
