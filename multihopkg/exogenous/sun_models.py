@@ -1525,7 +1525,7 @@ def save_configs(args):
     
     argparse_dict = vars(args)
     with open(os.path.join(args.save_path, 'config.json'), 'w') as fjson:
-        json.dump(argparse_dict, fjson)
+        json.dump(argparse_dict, fjson, indent=4)
 
 def save_model(model, optimizer, save_variable_list, save_dir, autoencoder_flag=False):
     '''
