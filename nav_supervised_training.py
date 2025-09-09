@@ -474,7 +474,7 @@ def batch_loop_dev(
     answer_id = mini_batch["Answer-Entity"].tolist()
     question_embeddings = env.get_llm_embeddings(questions, device)
 
-    logger.warning(f"About to go into rollout")
+    # logger.warning(f"About to go into rollout")
     log_probs, entropies, kg_rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
@@ -526,7 +526,7 @@ def batch_loop_dev(
         device
     )
 
-    logger.warning(f"We just left dev rollout")
+    # logger.warning(f"We just left dev rollout")
 
     return pg_loss, eval_extras
 
@@ -824,7 +824,7 @@ def test_nav_multihopkg(
     topk = 1
 
     with torch.no_grad():
-        for sample_offset_idx in tqdm(range(0, len(test_data), batch_size_test), desc=desc, leave=False):
+        for sample_offset_idx in tqdm(range(0, len(test_data), batch_size_test), desc=desc, leave=False, position=2):
             mini_batch = test_data[sample_offset_idx : sample_offset_idx + batch_size_test] 
             
             # Deconstruct the batch
@@ -1052,10 +1052,11 @@ def train_nav_multihopkg(
     ########################################
     # Epoch Loop
     ########################################
-    for epoch_id in tqdm(range(epochs), desc="Epoch"):
+    best_metrics = None
+    for epoch_id in tqdm(range(epochs), desc="Training Epoch", position=0):
         is_warmup = epoch_id < start_epoch
 
-        logger.info("Epoch {}".format(epoch_id))
+        # logger.info("Epoch {}".format(epoch_id))
         # TODO: Perhaps evaluate the epochs?
 
         # Set in training mode
@@ -1066,7 +1067,7 @@ def train_nav_multihopkg(
         # Batch Loop
         ##############################
         # TODO: update the parameters.
-        for sample_offset_idx in tqdm(range(0, len(train_data), batch_size), desc="Training Batches", leave=False):
+        for sample_offset_idx in tqdm(range(0, len(train_data), batch_size), desc="Training Batches", leave=False, position=1):
             mini_batch = train_data[sample_offset_idx : sample_offset_idx + batch_size]
 
             assert isinstance(
@@ -1176,15 +1177,25 @@ def train_nav_multihopkg(
             test_data = dev_df,
             steps_in_episode = steps_in_episode,
             batch_size_test = batch_size_dev,
-            verbose = True,
+            verbose = verbose,
             desc = f"Validating Batches {epoch_id}",
         )
+
+        if best_metrics is None or valid_eval_metrics['hits_1'] > best_metrics['hits_1']:
+            best_metrics = valid_eval_metrics
+            best_metrics['epoch'] = epoch_id + 1
 
         for key, value in valid_eval_metrics.items():
             if wandb_on:
                 wandb.log({f"valid/{key}": value})
             else:
                 writer.add_scalar(f"valid/{key}", value, epoch_id)
+
+    if best_metrics is not None:
+        logger.info(f"Best Validation Metrics at Epoch {best_metrics['epoch']}:")
+        for key, value in best_metrics.items():
+            if key != 'epoch':
+                logger.info(f"Valid {key}: {value:.5f}")
 
     # Evaluate the Model Performance at the End
     test_eval_metrics = test_nav_multihopkg(
@@ -1193,8 +1204,11 @@ def train_nav_multihopkg(
         test_data = test_data,
         steps_in_episode = steps_in_episode,
         batch_size_test = batch_size_dev,
-        verbose = True
+        verbose = verbose
     )
+
+    for key, value in test_eval_metrics.items():
+        logger.info(f"Test {key}: {value:.5f}")
 
     for key, value in test_eval_metrics.items():
         if wandb_on:
