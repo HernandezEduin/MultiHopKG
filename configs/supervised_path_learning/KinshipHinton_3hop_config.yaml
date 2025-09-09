@@ -1,10 +1,14 @@
-# hit@1 = 0.5385
+# Experiments with KinshipHinton 3-hop questions
+# train graph hit@1 = 0.59615 
+# full graph hit@1 = 0.59615 
+# ============================
 batch_size: 9
 batch_size_dev: 8
 beta: 0.06985519544113815
 cached_QAMetaData_path: "./.cache/itl/kinship_hinton_qa_3hop.json"
 data_dir: "data/KinshipHinton"
-epochs: 17
+epochs: 239 # train graph
+# epochs: 215 # full graph
 learning_rate: 0.00109082
 model: "TransE"
 nav_epsilon_error: 1
@@ -19,10 +23,12 @@ raw_QAData_path: "data/KinshipHinton/kinship_hinton_qa_3hop.csv"
 relationship_data_key: ""
 relationship_data_path: ""
 rl_gamma: 0.9432724080297948
-seed: 420
+seed: 42
 supervised_adapter_scalar: 0.001136
 supervised_expected_sigma: 0.000003
 supervised_noise_scale: 0.000003
 supervised_sigma_scalar: 0.000002
-trained_model_path: "models/TransE_KinshipHinton_dim12"
+trained_model_path: "models/TransE_KinshipHinton_dim10"
+# trained_model_path: "models/TransE_KinshipHinton_dim10_fullgraph"
 use_ann_reward: true
+verbose: false
