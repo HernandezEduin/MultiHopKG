@@ -580,6 +580,7 @@ def main(args):
                 args.save_path,
                 args.autoencoder_flag
             )
+
         else:
             logging.info('Final Evaluation on Valid Dataset...')
             metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args, constraints=constraints)
@@ -609,6 +610,15 @@ def main(args):
                     autoencoder_flag=args.autoencoder_flag, maximize=True
                 )
             
+                # load the best model for evaluation
+                if args.do_valid or args.do_train:
+                    if best_model_path is not None:
+                        logging.info(f'Loading best model from {best_model_path} for final evaluation...')
+                        checkpoint = torch.load(os.path.join(best_model_path, 'checkpoint'))
+                        kge_model.load_state_dict(checkpoint['model_state_dict'])
+                    else:
+                        logging.info('No best model found during training, using the final model for evaluation.')
+
             if getattr(args, 'clean_up', False):
                 clean_up_checkpoints(args.save_path)
             if getattr(args, 'clean_up_folder', False):
