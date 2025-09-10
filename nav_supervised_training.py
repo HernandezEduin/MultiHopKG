@@ -63,7 +63,7 @@ from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
 
 # Knowledge Graph Embeddings
-from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
+from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices, save_configs
 
 # Vector Search
 from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
@@ -948,6 +948,7 @@ def train_nav_multihopkg(
     noise_scale: float,
     wandb_on: bool,
     timestamp: str,
+    writer: SummaryWriter = None,
 ):
     """
     Trains the navigation agent using reinforcement learning (RL) on a knowledge graph environment.
@@ -1019,9 +1020,10 @@ def train_nav_multihopkg(
         for name, param in env.named_parameters():
             if param.requires_grad: print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
 
-    # local_time = time.localtime()
-    # timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
-    writer = SummaryWriter(log_dir=f'runs/nav_sv/{env.knowledge_graph.model_name.lower()}/{timestamp}/')
+    # save the model
+    model_path = f'./models/nav_sv/{timestamp}'
+    nav_path = os.path.join(model_path, f'nav_model.pth')
+    concat_projector_path = os.path.join(model_path, f'concat_projector.pth')
 
     named_param_map = {param: name for name, param in (list(nav_agent.named_parameters()) + list(env.named_parameters()))}
     optimizer = torch.optim.Adam(  # type: ignore
@@ -1185,10 +1187,8 @@ def train_nav_multihopkg(
             best_metrics = valid_eval_metrics
             best_metrics['epoch'] = epoch_id + 1
 
-            # save the model
-            model_path = f'./models/nav_sv/{env.knowledge_graph.model_name.lower()}_{timestamp}_best_model.pth'
-            torch.save(nav_agent.state_dict(), model_path)
-            torch.save(env.concat_projector.state_dict(), model_path.replace('.pth', '_concat_projector.pth'))
+            torch.save(nav_agent.state_dict(), nav_path)
+            torch.save(env.concat_projector.state_dict(), concat_projector_path)
 
         for key, value in valid_eval_metrics.items():
             if wandb_on:
@@ -1203,32 +1203,11 @@ def train_nav_multihopkg(
                 logger.info(f"Valid {key}: {value:.5f}")
         
         # load the best model
-        model_path = f'./models/nav_sv/{env.knowledge_graph.model_name.lower()}_{timestamp}_best_model.pth'
-        nav_agent.load_state_dict(torch.load(model_path))
-        concat_projector_path = model_path.replace('.pth', '_concat_projector.pth')
+        nav_agent.load_state_dict(torch.load(nav_path))
         if os.path.exists(concat_projector_path):
             env.concat_projector.load_state_dict(torch.load(concat_projector_path))
         else:
             logger.warning(f"Concat projector model file not found at {concat_projector_path}. Continuing without loading it.")
-
-    # Evaluate the Model Performance at the End
-    test_eval_metrics = test_nav_multihopkg(
-        env = env,
-        nav_agent = nav_agent,
-        test_data = test_data,
-        steps_in_episode = steps_in_episode,
-        batch_size_test = batch_size_dev,
-        verbose = verbose
-    )
-
-    for key, value in test_eval_metrics.items():
-        logger.info(f"Test {key}: {value:.5f}")
-
-    for key, value in test_eval_metrics.items():
-        if wandb_on:
-            wandb.log({f"test/{key}": value})
-        else:
-            writer.add_scalar(f"test/{key}", value, epoch_id)
 
 def main():
     """
@@ -1463,6 +1442,12 @@ def main():
     #     # TODO: Add it here to load the checkpoint separetely
     #     nav_agent.load_checkpoint(args.checkpoint_path)
 
+    writer = SummaryWriter(log_dir=f'runs/nav_sv/{env.knowledge_graph.model_name.lower()}/{timestamp}/')
+    args.save_path = f'./models/nav_sv/{timestamp}/'
+    if not os.path.exists(args.save_path):
+        os.makedirs(args.save_path)
+    save_configs(args)
+
     ######## ######## ########
     # Train:
     ######## ######## ########
@@ -1472,31 +1457,67 @@ def main():
     if args.visualize:
         args.verbose = True
 
-    train_nav_multihopkg(
-        batch_size=args.batch_size,
-        batch_size_dev=args.batch_size_dev,
-        epochs=args.epochs,
-        nav_agent=nav_agent,
-        learning_rate=args.learning_rate,
-        steps_in_episode=args.num_rollout_steps,
-        env=env,
-        start_epoch=args.start_epoch,
-        train_data=train_df,
-        test_data=test_df,
-        dev_df=dev_df,
-        mbatches_b4_eval=args.batches_b4_eval,
-        verbose=args.verbose,
-        visualize=args.visualize,
-        question_tokenizer=question_tokenizer,
-        track_gradients=args.track_gradients,
-        num_batches_till_eval=args.num_batches_till_eval,
-        adapter_scalar=args.supervised_adapter_scalar,
-        sigma_scalar=args.supervised_sigma_scalar,
-        expected_sigma=args.supervised_expected_sigma,
-        noise_scale=args.supervised_noise_scale,
-        wandb_on=args.wandb,
-        timestamp=timestamp,
-    )
+    if args.do_train:
+        train_nav_multihopkg(
+            batch_size=args.batch_size,
+            batch_size_dev=args.batch_size_dev,
+            epochs=args.epochs,
+            nav_agent=nav_agent,
+            learning_rate=args.learning_rate,
+            steps_in_episode=args.num_rollout_steps,
+            env=env,
+            start_epoch=args.start_epoch,
+            train_data=train_df,
+            test_data=test_df,
+            dev_df=dev_df,
+            mbatches_b4_eval=args.batches_b4_eval,
+            verbose=args.verbose,
+            visualize=args.visualize,
+            question_tokenizer=question_tokenizer,
+            track_gradients=args.track_gradients,
+            num_batches_till_eval=args.num_batches_till_eval,
+            adapter_scalar=args.supervised_adapter_scalar,
+            sigma_scalar=args.supervised_sigma_scalar,
+            expected_sigma=args.supervised_expected_sigma,
+            noise_scale=args.supervised_noise_scale,
+            wandb_on=args.wandb,
+            timestamp=timestamp,
+            writer=writer,
+        )
+
+    if args.do_valid:
+        # Evaluate the Model Performance at the End of the Epoch
+        valid_eval_metrics = test_nav_multihopkg(
+            env = env,
+            nav_agent = nav_agent,
+            test_data = dev_df,
+            steps_in_episode = args.num_rollout_steps,
+            batch_size_test = args.batch_size_dev,
+            verbose = args.verbose,
+            desc = f"Validating Batches",
+        )
+
+        for key, value in valid_eval_metrics.items():
+            logger.info(f"Valid {key}: {value:.5f}")
+
+    if args.do_test:
+        test_eval_metrics = test_nav_multihopkg(
+            env = env,
+            nav_agent = nav_agent,
+            test_data = test_df,
+            steps_in_episode = args.num_rollout_steps,
+            batch_size_test = args.batch_size_dev,
+            verbose = args.verbose
+        )
+
+        for key, value in test_eval_metrics.items():
+            logger.info(f"Test {key}: {value:.5f}")
+
+        for key, value in test_eval_metrics.items():
+            if args.wandb:
+                wandb.log({f"test/{key}": value})
+            else:
+                writer.add_scalar(f"test/{key}", value, args.epochs)
 
     logger.info("Done with everything. Exiting...")
 
