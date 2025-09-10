@@ -8,10 +8,8 @@ import argparse
 import json
 import logging
 import os
-import random
 import wandb
 import time
-import re
 
 import numpy as np
 import torch
@@ -23,6 +21,7 @@ from multihopkg.exogenous.sun_models import KGEModel
 from multihopkg.utils.data_splitting import read_triple
 from multihopkg.utils.saving import save_train_configs, save_kge_model, update_best_kge_model
 from multihopkg.utils.cleaning import clean_up_checkpoints, clean_up_folder
+from multihopkg.utils.metrics import log_kge_metrics
 
 from multihopkg.utils.setup import set_seeds
 
@@ -156,26 +155,6 @@ def set_logger(args):
     formatter = logging.Formatter('%(asctime)s %(levelname)-8s %(message)s')
     console.setFormatter(formatter)
     logging.getLogger('').addHandler(console)
-
-def sort_key(metric_name):
-    """
-    Custom sort key to handle metrics with numbers, like HITS@10.
-    It splits the metric name into text and number parts for correct sorting.
-    """
-    parts = re.split(r'(\d+)', metric_name)
-    # Convert numeric parts to integers for proper numeric sorting
-    return [int(part) if part.isdigit() else part.lower() for part in parts]
-
-def log_metrics(mode, step, metrics):
-    '''
-    Print the evaluation logs
-    '''
-    for metric in sorted(metrics.keys(), key=sort_key):
-        logging.info('%s %s at step %d: %f' % (mode, metric, step, metrics[metric]))
-
-    # Log to wandb as well
-    if wandb.run is not None:
-        wandb.log({f"{mode}_{metric.replace(' ', '_')}": value for metric, value in metrics.items()}, step=step)    
 
 def reload_embeddings_only(kge_model, init_checkpoint, reload_entities=False, reload_relationship=False):
     """
@@ -530,14 +509,14 @@ def main(args):
                 metrics = {}
                 for metric in training_logs[0].keys():
                     metrics[metric] = sum([log[metric] for log in training_logs])/len(training_logs)
-                log_metrics('Training average', step, metrics)
+                log_kge_metrics('Training average', step, metrics)
                 training_logs = []
             
             
             if args.do_valid and step % args.valid_steps == 0:
                 logging.info('Evaluating on Valid Dataset...')
                 metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args, constraints=constraints)
-                log_metrics('Valid', step, metrics)
+                log_kge_metrics('Valid', step, metrics)
 
                 # If the metric is present and above the threshold, save the model
                 if metric_token in metrics and metrics[metric_token] > args.saving_threshold:
@@ -587,7 +566,7 @@ def main(args):
         else:
             logging.info('Final Evaluation on Valid Dataset...')
             metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args, constraints=constraints)
-            log_metrics('Valid', step, metrics)
+            log_kge_metrics('Valid', step, metrics)
 
             if metric_token in metrics and metrics[metric_token] > args.saving_threshold:
                 save_variable_list = {
@@ -631,17 +610,17 @@ def main(args):
     if args.do_valid:
         logging.info('Evaluating on Valid Dataset...')
         metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args, constraints=constraints)
-        log_metrics('Valid', step, metrics)
+        log_kge_metrics('Valid', step, metrics)
     
     if args.do_test:
         logging.info('Evaluating on Test Dataset...')
         metrics = kge_model.test_step(kge_model, test_triples, all_true_triples, args, constraints=constraints)
-        log_metrics('Test', step, metrics)
+        log_kge_metrics('Test', step, metrics)
     
     if args.evaluate_train:
         logging.info('Evaluating on Training Dataset...')
         metrics = kge_model.test_step(kge_model, train_triples, all_true_triples, args, constraints=constraints)
-        log_metrics('Train', step, metrics)
+        log_kge_metrics('Train', step, metrics)
         
 if __name__ == '__main__':
     main(parse_args())
