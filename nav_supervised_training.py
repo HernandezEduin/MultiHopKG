@@ -1185,6 +1185,11 @@ def train_nav_multihopkg(
             best_metrics = valid_eval_metrics
             best_metrics['epoch'] = epoch_id + 1
 
+            # save the model
+            model_path = f'./models/nav_sv/{env.knowledge_graph.model_name.lower()}_{timestamp}_best_model.pth'
+            torch.save(nav_agent.state_dict(), model_path)
+            torch.save(env.concat_projector.state_dict(), model_path.replace('.pth', '_concat_projector.pth'))
+
         for key, value in valid_eval_metrics.items():
             if wandb_on:
                 wandb.log({f"valid/{key}": value})
@@ -1196,6 +1201,15 @@ def train_nav_multihopkg(
         for key, value in best_metrics.items():
             if key != 'epoch':
                 logger.info(f"Valid {key}: {value:.5f}")
+        
+        # load the best model
+        model_path = f'./models/nav_sv/{env.knowledge_graph.model_name.lower()}_{timestamp}_best_model.pth'
+        nav_agent.load_state_dict(torch.load(model_path))
+        concat_projector_path = model_path.replace('.pth', '_concat_projector.pth')
+        if os.path.exists(concat_projector_path):
+            env.concat_projector.load_state_dict(torch.load(concat_projector_path))
+        else:
+            logger.warning(f"Concat projector model file not found at {concat_projector_path}. Continuing without loading it.")
 
     # Evaluate the Model Performance at the End
     test_eval_metrics = test_nav_multihopkg(
