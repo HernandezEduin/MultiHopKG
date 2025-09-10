@@ -539,7 +539,6 @@ def batch_loop(
     mini_batch: pd.DataFrame,  # Perhaps change this ?
     nav_agent: ContinuousPolicyGradient,
     steps_in_episode: int,
-    warmup: bool = False,
     adapter_scalar: float = 0.5,
     sigma_scalar: float = 0.1,
     expected_sigma: float = 0.03, # best gueess so far 0.01
@@ -645,7 +644,6 @@ def evaluate_training(
     batch_size_dev: int,
     batch_count: int,
     verbose: bool,
-    visualize: bool,
     writer: SummaryWriter,
     question_tokenizer: PreTrainedTokenizer,
     wandb_on: bool,
@@ -674,8 +672,6 @@ def evaluate_training(
             The current batch count during training.
         verbose (bool): 
             If `True`, additional information is logged for debugging purposes.
-        visualize (bool): 
-            If `True`, visualizations of the evaluation process are generated.
         writer (SummaryWriter): 
             A TensorBoard writer for logging metrics and visualizations.
         question_tokenizer (PreTrainedTokenizer): 
@@ -866,10 +862,8 @@ def test_nav_multihopkg(
             _, entity_indices, distances = env.ann_index_manager_ent.search(observations.kge_cur_pos.detach().cpu(), topk) # (batch, num_rollouts, topk)
             entity_indices = entity_indices.reshape(answer_tensor.size(0), env.num_rollouts) # throwing away last dim (topk)
             distances = distances.reshape(answer_tensor.size(0), env.num_rollouts)
-
-            # TODO: Might want to consider log_prob for sorting instead of closest distance to Any Entity
-            # sort distances from smallest to largest
-            # sorted_indices = distances.argsort(axis=-1)
+            
+            # Sort entity_indices and distances based on path_log_prob descending
             sorted_indices = (-path_log_prob).cpu().numpy().argsort(axis=-1)  # Sort by log_prob descending
             entity_indices = np.take_along_axis(entity_indices, sorted_indices, axis=-1)
             distances = np.take_along_axis(distances, sorted_indices, axis=-1)
@@ -935,16 +929,10 @@ def train_nav_multihopkg(
     learning_rate: float,
     steps_in_episode: int,
     env: ITLGraphEnvironment,
-    start_epoch: int,
     train_data: pd.DataFrame,
-    test_data: pd.DataFrame,
     dev_df: pd.DataFrame,
-    mbatches_b4_eval: int,
     verbose: bool,
-    visualize: bool,
     question_tokenizer: PreTrainedTokenizer,
-    track_gradients: bool,
-    num_batches_till_eval: int,
     adapter_scalar: float,
     sigma_scalar: float,
     expected_sigma: float,
@@ -1012,7 +1000,6 @@ def train_nav_multihopkg(
         - Metrics and visualizations are logged to TensorBoard and optionally to wandb.
         - The function ensures that the environment and models are in training mode during the process.
     """
-    # TODO: Get the rollout working
     # Print Model Parameters + Perhaps some more information
     if verbose:
         print(
@@ -1026,10 +1013,7 @@ def train_nav_multihopkg(
 
     # save the model
     model_path = f'./models/nav_sv/{timestamp}'
-    nav_path = os.path.join(model_path, f'nav_model.pth')
-    concat_projector_path = os.path.join(model_path, f'concat_projector.pth')
 
-    named_param_map = {param: name for name, param in (list(nav_agent.named_parameters()) + list(env.named_parameters()))}
     optimizer = torch.optim.Adam(  # type: ignore
         filter(
             lambda p: p.requires_grad,
@@ -1038,32 +1022,14 @@ def train_nav_multihopkg(
         lr=learning_rate
     )
 
-    # scheduler = torch.optim.lr_scheduler.StepLR(
-    #     optimizer,
-    #     step_size=10000,
-    #     gamma=0.95,
-    # )
-
-    modules_to_log: List[nn.Module] = [nav_agent]
-
     # Variable to pass for logging
     batch_count = 0
-
-    # Replacement for the hooks
-    if track_gradients:
-        grad_logger = torch_module_logging.ModuleSupervisor({
-            "navigation_agent" : nav_agent, 
-        })
 
     ########################################
     # Epoch Loop
     ########################################
     best_metrics = None
     for epoch_id in tqdm(range(epochs), desc="Training Epoch", position=0):
-        is_warmup = epoch_id < start_epoch
-
-        # logger.info("Epoch {}".format(epoch_id))
-        # TODO: Perhaps evaluate the epochs?
 
         # Set in training mode
         nav_agent.train()
@@ -1072,7 +1038,6 @@ def train_nav_multihopkg(
         ##############################
         # Batch Loop
         ##############################
-        # TODO: update the parameters.
         for sample_offset_idx in tqdm(range(0, len(train_data), batch_size), desc="Training Batches", leave=False, position=1):
             mini_batch = train_data[sample_offset_idx : sample_offset_idx + batch_size]
 
@@ -1088,7 +1053,7 @@ def train_nav_multihopkg(
             optimizer.zero_grad()
 
             mse_loss, _ = batch_loop(
-                env, mini_batch, nav_agent, steps_in_episode, warmup=is_warmup,
+                env, mini_batch, nav_agent, steps_in_episode,
                 adapter_scalar=adapter_scalar,
                 sigma_scalar=sigma_scalar,
                 expected_sigma=expected_sigma,
@@ -1096,7 +1061,7 @@ def train_nav_multihopkg(
             )
 
             if torch.isnan(mse_loss).any():
-                logger.error("NaN detected in the warmup loss. Aborting training.")
+                logger.error("NaN detected in the loss. Aborting training.")
                 sys.exit()
 
             mse_mean = mse_loss.mean()
@@ -1108,54 +1073,7 @@ def train_nav_multihopkg(
                 logger.error("Aborting training.")
                 sys.exit()
 
-            # Inspecting vanishing gradient
-            if sample_offset_idx % num_batches_till_eval == 0 and verbose:
-                # Retrieve named parameters from the optimizer
-                named_params = [
-                    (named_param_map[param], param)
-                    for group in optimizer.param_groups
-                    for param in group['params']
-                ]
-
-
-                # Iterate and calculate gradients as needed
-                for name, param in named_params:
-                    if param.requires_grad and ('bias' not in name) and (param.grad is not None):
-                        if name == 'weight': name = 'concat_projector.weight'               
-                        grads = param.grad.detach().cpu()
-                        weights = param.detach().cpu()
-
-                        dist_tracker.write_dist_parameters(grads, name, "Gradient", writer, epoch_id)
-                        dist_tracker.write_dist_parameters(weights, name, "Weights", writer, epoch_id)
-
-                        if wandb_on:
-                            wandb.log({f"{name}/Gradient": wandb.Histogram(grads.numpy().flatten())})
-                            wandb.log({f"{name}/Weights": wandb.Histogram(weights.numpy().flatten())})
-                        elif visualize:
-                            dist_tracker.write_dist_histogram(
-                                grads.numpy().flatten(),
-                                name, 
-                                'g', 
-                                "Gradient Histogram", 
-                                "Grad Value", 
-                                "Frequency", 
-                                writer, 
-                                epoch_id
-                            )
-                            dist_tracker.write_dist_histogram(
-                                weights.numpy().flatten(), 
-                                name, 
-                                'b', 
-                                "Weights Histogram", 
-                                "Weight Value", 
-                                "Frequency", 
-                                writer, 
-                                epoch_id
-                            )
-
             optimizer.step()
-            # scheduler.step()
-            # logger.info(f"[Warmup] update at epoch/batch {epoch_id}/{batch_count}")
 
             batch_count += 1
 
@@ -1168,7 +1086,6 @@ def train_nav_multihopkg(
             batch_size_dev = batch_size_dev,
             batch_count = batch_count,
             verbose = verbose,
-            visualize = visualize,
             writer = writer,
             question_tokenizer = question_tokenizer,
             wandb_on = wandb_on,
@@ -1188,6 +1105,7 @@ def train_nav_multihopkg(
                 desc = f"Validating Batches {epoch_id}",
             )
 
+            # Update the saved model if it is the best yet
             if best_metrics is None or valid_eval_metrics['hits_1'] > best_metrics['hits_1']:
                 best_metrics = valid_eval_metrics
                 best_metrics['epoch'] = epoch_id + 1
@@ -1294,9 +1212,6 @@ def main():
 
         # USe debugpy to listen
 
-    ########################################
-    # Get the data
-    ########################################
     logger.info(":: Setting up the data")
 
     # Load the KGE Dictionaries
@@ -1319,12 +1234,6 @@ def main():
             "The data was not loaded properly. Please check the data loading code."
         )
 
-    # TODO: Muybe ? (They use it themselves)
-    # initialize_model_directory(args, args.seed)
-
-    ########################################
-    # Set the KG Environment
-    ########################################
     # Agent needs a Knowledge graph as well as the environment
     logger.info(":: Setting up the knowledge graph")
 
@@ -1342,24 +1251,8 @@ def main():
     # Information computed by knowldege graph for future dependency injection
     dim_entity = kge_model.get_entity_dim()
     dim_relation = kge_model.get_relation_dim()
-
-    # Paths for triples
-    train_triplets_path = os.path.join(args.data_dir, "train.triples")
-    dev_triplets_path = os.path.join(args.data_dir, "dev.triples")
-    entity_index_path = os.path.join(args.data_dir, "entity2id.txt")
-    relation_index_path = os.path.join(args.data_dir, "relation2id.txt")
-
-    # Get the Module for Approximate Nearest Neighbor Search
-    ########################################
-    # Setup the ann index.
-    # Will be needed for obtaining observations.
-    ########################################
     
     logger.info(":: Setting up the ANN Index")
-
-    ########################################
-    # Setup the Vector Searchers
-    ########################################
     # TODO: Improve the ANN index manager for rotational models
     if args.model == "pRotatE": # for rotational kge models
         ann_index_manager_ent = ANN_IndexMan_pRotatE(
@@ -1383,9 +1276,9 @@ def main():
         )
 
     # Setup the entity embedding module
+    logger.info(":: Setting up the question embedding module")
     question_embedding_module = AutoModel.from_pretrained(args.question_embedding_model).to(args.device)
 
-    # Setting up the models
     logger.info(":: Setting up the environment")
     env = ITLGraphEnvironment(
         question_embedding_module=question_embedding_module,
@@ -1419,28 +1312,15 @@ def main():
         add_transition_state=args.add_transition_state
     ).to(args.device)
 
-    # env.concat_projector.to(args.device)
-
-    # Now we load this from the embedding models
-
-    # TODO: Reorganizew the parameters lol
     logger.info(":: Setting up the navigation agent")
     nav_agent = ContinuousPolicyGradient(
         beta=args.beta,
         gamma=args.rl_gamma,
         dim_action=dim_relation,
         dim_hidden=args.rnn_hidden,
-        # dim_observation=args.history_dim,  # observation will be into history
         dim_observation = 3*dim_entity + 2*dim_relation if args.add_transition_state else 2*dim_entity + dim_relation,
     ).to(args.device)
 
-    # ======================================
-    # Visualizaing nav_agent models using Netron
-    # Save a model into .onnx format
-    # torch_input = torch.randn(12, 768)
-    # onnx_program = torch.onnx.dynamo_export(nav_agent, torch_input)
-    # onnx_program.save("models/images/nav_agent.onnx")
-    # ======================================
 
     if os.path.exists(args.checkpoint_path):
         logger.info(f":: Checkpoint found, loading the model from {args.checkpoint_path}")
@@ -1462,7 +1342,6 @@ def main():
     ######## ######## ########
     # Train:
     ######## ######## ########
-    start_epoch = 0
 
     if args.visualize:
         args.verbose = True
@@ -1477,16 +1356,10 @@ def main():
             learning_rate=args.learning_rate,
             steps_in_episode=args.num_rollout_steps,
             env=env,
-            start_epoch=args.start_epoch,
             train_data=train_df,
-            test_data=test_df,
             dev_df=dev_df,
-            mbatches_b4_eval=args.batches_b4_eval,
             verbose=args.verbose,
-            visualize=args.visualize,
             question_tokenizer=question_tokenizer,
-            track_gradients=args.track_gradients,
-            num_batches_till_eval=args.num_batches_till_eval,
             adapter_scalar=args.supervised_adapter_scalar,
             sigma_scalar=args.supervised_sigma_scalar,
             expected_sigma=args.supervised_expected_sigma,
@@ -1499,7 +1372,6 @@ def main():
 
     if args.do_valid:
         logger.info(":: Validating the model")
-        # Evaluate the Model Performance at the End of the Epoch
         valid_eval_metrics = test_nav_multihopkg(
             env = env,
             nav_agent = nav_agent,
@@ -1534,9 +1406,6 @@ def main():
                 writer.add_scalar(f"test/{key}", value, args.epochs)
 
     logger.info("Done with everything. Exiting...")
-
-    # TODO: Evaluation of the model
-    # metrics = inference(lf)
 
 if __name__ == "__main__":
     main()
