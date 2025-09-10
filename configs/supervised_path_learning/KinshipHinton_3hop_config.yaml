@@ -7,6 +7,9 @@ batch_size_dev: 8
 beta: 0.06985519544113815
 cached_QAMetaData_path: "./.cache/itl/kinship_hinton_qa_3hop.json"
 data_dir: "data/KinshipHinton"
+do_train: true
+do_valid: true
+do_test: true
 epochs: 239 # train graph
 # epochs: 215 # full graph
 learning_rate: 0.00109082
@@ -18,7 +21,6 @@ node_data_key: ""
 node_data_path: ""
 num_rollout_steps: 3
 num_rollouts: 16
-preferred_config: ""
 raw_QAData_path: "data/KinshipHinton/kinship_hinton_qa_3hop.csv"
 relationship_data_key: ""
 relationship_data_path: ""
@@ -28,7 +30,7 @@ supervised_adapter_scalar: 0.001136
 supervised_expected_sigma: 0.000003
 supervised_noise_scale: 0.000003
 supervised_sigma_scalar: 0.000002
-trained_model_path: "models/TransE_KinshipHinton_dim10"
-# trained_model_path: "models/TransE_KinshipHinton_dim10_fullgraph"
+trained_model_path: "models/graph_embeddings/TransE_KinshipHinton_dim10"
+# trained_model_path: "models/graph_embeddings/TransE_KinshipHinton_dim10_fullgraph"
 use_ann_reward: true
 verbose: false
