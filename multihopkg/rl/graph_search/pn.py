@@ -14,7 +14,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
+from multihopkg.exogenous.sun_models import KGEModel
+from multihopkg.utils.convenience import get_embeddings_from_indices
 import multihopkg.utils.ops as ops
 from multihopkg.utils.ops import var_cuda, zeros_var_cuda
 from multihopkg.vector_search import ANN_IndexMan

@@ -38,7 +38,8 @@ from transformers import (
 import multihopkg.data_utils as data_utils
 import multihopkg.utils_debug.distribution_tracker as dist_tracker
 from multihopkg.environments import Observation
-from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
+from multihopkg.exogenous.sun_models import KGEModel
+from multihopkg.utils.convenience import get_embeddings_from_indices
 from multihopkg.models_language.classical import HunchBart, collate_token_ids_batch
 from multihopkg.logging import setup_logger
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient

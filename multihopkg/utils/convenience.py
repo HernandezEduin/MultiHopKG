@@ -44,3 +44,38 @@ def sample_random_entity(embeddings: Union[nn.Embedding, nn.Parameter]):  # Use 
         idx = torch.randint(0, num_entities, (1,))
         sample = embeddings.weight.data[idx].squeeze()
     return sample
+
+def get_embeddings_from_indices(embeddings: Union[nn.Embedding, nn.Parameter], indices: torch.Tensor) -> torch.Tensor:
+    """
+    Given a tensor of indices, returns the embeddings of the corresponding rows.
+
+    Args:
+        embeddings (Union[nn.Embedding, nn.Parameter]): The embedding matrix.
+        indices (torch.Tensor): A tensor of indices.
+
+    Returns:
+        torch.Tensor: The embeddings corresponding to the given indices.
+    """
+
+    if isinstance(embeddings, nn.Parameter):
+        return embeddings.data[indices]
+    elif isinstance(embeddings, nn.Embedding):
+        return embeddings.weight.data[indices]
+    else:
+        raise TypeError("Embeddings must be either nn.Parameter or nn.Embedding")
+
+def calculate_entity_centroid(embeddings: Union[nn.Embedding, nn.Parameter]):
+    if isinstance(embeddings, nn.Parameter):
+        entity_centroid = torch.mean(embeddings.data, dim=0)
+    elif isinstance(embeddings, nn.Embedding):
+        entity_centroid = torch.mean(embeddings.weight.data, dim=0)
+    return entity_centroid
+
+def calculate_entity_range(embeddings: Union[nn.Embedding, nn.Parameter]):
+    if isinstance(embeddings, nn.Parameter):
+        max_range = torch.max(embeddings.data).item()
+        min_range = torch.min(embeddings.data).item()
+    elif isinstance(embeddings, nn.Embedding):
+        max_range = torch.max(embeddings.weight.data).item()
+        min_range = torch.min(embeddings.weight.data).item()
+    return min_range, max_range

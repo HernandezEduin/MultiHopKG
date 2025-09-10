@@ -22,7 +22,7 @@ from sklearn.metrics import average_precision_score
 
 from torch.utils.data import DataLoader, Dataset
 
-from multihopkg.utils.convenience import sample_random_entity
+from multihopkg.utils.convenience import sample_random_entity, get_embeddings_from_indices, calculate_entity_centroid, calculate_entity_range
 from multihopkg.emb.operations import normalize_angle_smooth, normalize_angle, angular_difference
 
 from multihopkg.datasets import TestDataset
@@ -1482,41 +1482,6 @@ class KGEModel(nn.Module):
         else:
             raise Warning("Invalid navigation starting type/point. Using centroid instead.")
             return self.centroid
-
-def get_embeddings_from_indices(embeddings: Union[nn.Embedding, nn.Parameter], indices: torch.Tensor) -> torch.Tensor:
-    """
-    Given a tensor of indices, returns the embeddings of the corresponding rows.
-
-    Args:
-        embeddings (Union[nn.Embedding, nn.Parameter]): The embedding matrix.
-        indices (torch.Tensor): A tensor of indices.
-
-    Returns:
-        torch.Tensor: The embeddings corresponding to the given indices.
-    """
-
-    if isinstance(embeddings, nn.Parameter):
-        return embeddings.data[indices]
-    elif isinstance(embeddings, nn.Embedding):
-        return embeddings.weight.data[indices]
-    else:
-        raise TypeError("Embeddings must be either nn.Parameter or nn.Embedding")
-
-def calculate_entity_centroid(embeddings: Union[nn.Embedding, nn.Parameter]):
-    if isinstance(embeddings, nn.Parameter):
-        entity_centroid = torch.mean(embeddings.data, dim=0)
-    elif isinstance(embeddings, nn.Embedding):
-        entity_centroid = torch.mean(embeddings.weight.data, dim=0)
-    return entity_centroid
-
-def calculate_entity_range(embeddings: Union[nn.Embedding, nn.Parameter]):
-    if isinstance(embeddings, nn.Parameter):
-        max_range = torch.max(embeddings.data).item()
-        min_range = torch.min(embeddings.data).item()
-    elif isinstance(embeddings, nn.Embedding):
-        max_range = torch.max(embeddings.weight.data).item()
-        min_range = torch.min(embeddings.weight.data).item()
-    return min_range, max_range
 
 def save_configs(args):
     '''

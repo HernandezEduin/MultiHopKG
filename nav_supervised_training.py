@@ -63,7 +63,8 @@ from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
 
 # Knowledge Graph Embeddings
-from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices, save_configs
+from multihopkg.exogenous.sun_models import KGEModel, save_configs
+from multihopkg.utils.convenience import get_embeddings_from_indices
 
 # Vector Search
 from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
