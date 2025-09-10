@@ -949,6 +949,7 @@ def train_nav_multihopkg(
     wandb_on: bool,
     timestamp: str,
     writer: SummaryWriter = None,
+    do_valid: bool = True,
 ):
     """
     Trains the navigation agent using reinforcement learning (RL) on a knowledge graph environment.
@@ -1172,29 +1173,30 @@ def train_nav_multihopkg(
             timestamp = timestamp,
         )
 
-        # Evaluate the Model Performance at the End of the Epoch
-        valid_eval_metrics = test_nav_multihopkg(
-            env = env,
-            nav_agent = nav_agent,
-            test_data = dev_df,
-            steps_in_episode = steps_in_episode,
-            batch_size_test = batch_size_dev,
-            verbose = verbose,
-            desc = f"Validating Batches {epoch_id}",
-        )
+        if do_valid:
+            # Evaluate the Model Performance at the End of the Epoch
+            valid_eval_metrics = test_nav_multihopkg(
+                env = env,
+                nav_agent = nav_agent,
+                test_data = dev_df,
+                steps_in_episode = steps_in_episode,
+                batch_size_test = batch_size_dev,
+                verbose = verbose,
+                desc = f"Validating Batches {epoch_id}",
+            )
 
-        if best_metrics is None or valid_eval_metrics['hits_1'] > best_metrics['hits_1']:
-            best_metrics = valid_eval_metrics
-            best_metrics['epoch'] = epoch_id + 1
+            if best_metrics is None or valid_eval_metrics['hits_1'] > best_metrics['hits_1']:
+                best_metrics = valid_eval_metrics
+                best_metrics['epoch'] = epoch_id + 1
 
-            torch.save(nav_agent.state_dict(), nav_path)
-            torch.save(env.concat_projector.state_dict(), concat_projector_path)
+                torch.save(nav_agent.state_dict(), nav_path)
+                torch.save(env.concat_projector.state_dict(), concat_projector_path)
 
-        for key, value in valid_eval_metrics.items():
-            if wandb_on:
-                wandb.log({f"valid/{key}": value})
-            else:
-                writer.add_scalar(f"valid/{key}", value, epoch_id)
+            for key, value in valid_eval_metrics.items():
+                if wandb_on:
+                    wandb.log({f"valid/{key}": value})
+                else:
+                    writer.add_scalar(f"valid/{key}", value, epoch_id)
 
     if best_metrics is not None:
         logger.info(f"Best Validation Metrics at Epoch {best_metrics['epoch']}:")
@@ -1442,22 +1444,37 @@ def main():
     #     # TODO: Add it here to load the checkpoint separetely
     #     nav_agent.load_checkpoint(args.checkpoint_path)
 
+    if os.path.exists(args.checkpoint_path):
+        logger.info(f":: Checkpoint found, loading the model from {args.checkpoint_path}")
+        nav_agent_path = os.path.join(args.checkpoint_path, f'nav_model.pth')
+        concat_projector_path = os.path.join(args.checkpoint_path, f'concat_projector.pth')
+        if not os.path.exists(nav_agent_path):
+            raise RuntimeError(f"The provided checkpoint_path {nav_agent_path} does not exist. Please check the path.")
+        if not os.path.exists(concat_projector_path):
+            raise RuntimeError(f"The provided checkpoint_path {concat_projector_path} does not exist. Please check the path.")
+
+        logger.info(f"Loading the model from {args.checkpoint_path}")
+        nav_agent.load_state_dict(torch.load(nav_agent_path))
+        env.concat_projector.load_state_dict(torch.load(concat_projector_path))
+    else:
+        logger.info(f":: No checkpoint found at {args.checkpoint_path}, training from scratch")
+        args.save_path = f'./models/nav_sv/{timestamp}/'
+        if not os.path.exists(args.save_path):
+            os.makedirs(args.save_path)
+        save_configs(args)
+
     writer = SummaryWriter(log_dir=f'runs/nav_sv/{env.knowledge_graph.model_name.lower()}/{timestamp}/')
-    args.save_path = f'./models/nav_sv/{timestamp}/'
-    if not os.path.exists(args.save_path):
-        os.makedirs(args.save_path)
-    save_configs(args)
 
     ######## ######## ########
     # Train:
     ######## ######## ########
     start_epoch = 0
-    logger.info(":: Training the model")
 
     if args.visualize:
         args.verbose = True
 
     if args.do_train:
+        logger.info(":: Training the model")
         train_nav_multihopkg(
             batch_size=args.batch_size,
             batch_size_dev=args.batch_size_dev,
@@ -1483,9 +1500,11 @@ def main():
             wandb_on=args.wandb,
             timestamp=timestamp,
             writer=writer,
+            do_valid=args.do_valid,
         )
 
     if args.do_valid:
+        logger.info(":: Validating the model")
         # Evaluate the Model Performance at the End of the Epoch
         valid_eval_metrics = test_nav_multihopkg(
             env = env,
@@ -1501,6 +1520,7 @@ def main():
             logger.info(f"Valid {key}: {value:.5f}")
 
     if args.do_test:
+        logger.info(":: Testing the model")
         test_eval_metrics = test_nav_multihopkg(
             env = env,
             nav_agent = nav_agent,
