@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader
 
 from multihopkg.exogenous.sun_models import KGEModel
 from multihopkg.utils.data_splitting import read_triple
+from multihopkg.utils.saving import load_selective_kge_embeddings
 from multihopkg.utils.saving import save_train_configs, save_kge_model, update_best_kge_model
 from multihopkg.utils.cleaning import clean_up_checkpoints, clean_up_folder
 from multihopkg.utils.metrics import log_kge_metrics
@@ -155,35 +156,6 @@ def set_logger(args):
     formatter = logging.Formatter('%(asctime)s %(levelname)-8s %(message)s')
     console.setFormatter(formatter)
     logging.getLogger('').addHandler(console)
-
-def reload_embeddings_only(kge_model, init_checkpoint, reload_entities=False, reload_relationship=False):
-    """
-    Reload only entity or relation embeddings from a checkpoint directory.
-    """
-    checkpoint_path = os.path.join(init_checkpoint, 'checkpoint')
-    if not os.path.exists(checkpoint_path):
-        raise ValueError(f"Checkpoint not found at {checkpoint_path}")
-
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    state_dict = checkpoint['model_state_dict']
-
-    current_state = kge_model.state_dict()
-
-    reload_keys = []
-    if reload_entities:
-        # All keys for entity embedding
-        reload_keys.extend([k for k in state_dict.keys() if "entity_embedding" in k])
-    if reload_relationship:
-        reload_keys.extend([k for k in state_dict.keys() if "relation_embedding" in k])
-        # If you have autoencoder weights for relations, add those here if you wish:
-        # reload_keys.extend([k for k in state_dict.keys() if "relation_encoder" in k or "relation_decoder" in k])
-
-    # Overwrite only requested keys
-    for key in reload_keys:
-        if key in current_state:
-            current_state[key] = state_dict[key]
-    kge_model.load_state_dict(current_state, strict=False)
-    logging.info(f"Reloaded embeddings: {', '.join(reload_keys)} from {checkpoint_path}")
 
 def create_dataloader(train_triples, nentity, nrelation, negative_sample_size, batch_size, cpu_num, mode, lambda_loss):
     return DataLoader(
@@ -411,11 +383,12 @@ def main(args):
     if args.init_checkpoint:
         if getattr(args, "reload_entities", False) or getattr(args, "reload_relationship", False):
             # Only reload selected embeddings (transfer learning mode)
-            reload_embeddings_only(
+            load_selective_kge_embeddings(
                 kge_model,
                 args.init_checkpoint,
                 reload_entities=getattr(args, "reload_entities", False),
                 reload_relationship=getattr(args, "reload_relationship", False),
+                logger=logging
             )
             # Initialize optimizer as new!
             init_step = 0

@@ -104,3 +104,39 @@ def update_best_kge_model(
         if logger is not None:
             logger.info(f"Current {metric_name}: {metric_value:.5f} did not improve over best {metric_name}: {best_metric_value:.5f}. Best model remains at: {best_model_path}")
     return best_metric_value, best_model_path
+
+def load_selective_kge_embeddings(
+        kge_model: KGEModel, 
+        init_checkpoint: str, 
+        reload_entities: bool = False, 
+        reload_relationship: bool = False,
+        logger: logging.Logger = None
+        ) -> None:
+    """
+    Loads only entity or relation embeddings from a checkpoint directory instead of the full model.
+    """
+    checkpoint_path = os.path.join(init_checkpoint, 'checkpoint')
+    if not os.path.exists(checkpoint_path):
+        raise ValueError(f"Checkpoint not found at {checkpoint_path}")
+
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    state_dict = checkpoint['model_state_dict']
+
+    current_state = kge_model.state_dict()
+
+    reload_keys = []
+    if reload_entities:
+        # All keys for entity embedding
+        reload_keys.extend([k for k in state_dict.keys() if "entity_embedding" in k])
+    if reload_relationship:
+        reload_keys.extend([k for k in state_dict.keys() if "relation_embedding" in k])
+        # If you have autoencoder weights for relations, add those here if you wish:
+        # reload_keys.extend([k for k in state_dict.keys() if "relation_encoder" in k or "relation_decoder" in k])
+
+    # Overwrite only requested keys
+    for key in reload_keys:
+        if key in current_state:
+            current_state[key] = state_dict[key]
+    kge_model.load_state_dict(current_state, strict=False)
+    if logger is not None:
+        logger.info(f"Reloaded embeddings: {', '.join(reload_keys)} from {checkpoint_path}")
