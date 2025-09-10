@@ -63,8 +63,9 @@ from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
 
 # Knowledge Graph Embeddings
-from multihopkg.exogenous.sun_models import KGEModel, save_configs
+from multihopkg.exogenous.sun_models import KGEModel
 from multihopkg.utils.convenience import get_embeddings_from_indices
+from multihopkg.utils.saving import save_train_configs
 
 # Vector Search
 from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
@@ -1462,7 +1463,7 @@ def main():
         args.save_path = f'./models/nav_sv/{timestamp}/'
         if not os.path.exists(args.save_path):
             os.makedirs(args.save_path)
-        save_configs(args)
+        save_train_configs(args, save_path=args.save_path)
 
     writer = SummaryWriter(log_dir=f'runs/nav_sv/{env.knowledge_graph.model_name.lower()}/{timestamp}/')
 

@@ -19,8 +19,9 @@ import debugpy
 
 from torch.utils.data import DataLoader
 
-from multihopkg.exogenous.sun_models import KGEModel, save_model, update_best_model, clean_up_checkpoints, clean_up_folder, save_configs
+from multihopkg.exogenous.sun_models import KGEModel, clean_up_checkpoints, clean_up_folder
 from multihopkg.utils.data_splitting import read_triple
+from multihopkg.utils.saving import save_train_configs, save_kge_model, update_best_kge_model
 
 from multihopkg.utils.setup import set_seeds
 
@@ -515,8 +516,8 @@ def main(args):
                     'current_learning_rate': current_learning_rate,
                     'warm_up_steps': warm_up_steps
                 }
-                save_configs(args)
-                save_model(
+                save_train_configs(args)
+                save_kge_model(
                     kge_model,
                     optimizer,
                     save_variable_list,
@@ -545,10 +546,10 @@ def main(args):
                         'current_learning_rate': current_learning_rate,
                         'warm_up_steps': warm_up_steps
                     }
-                    save_configs(args)
+                    save_train_configs(args)
                     save_dir = os.path.join(args.save_path, 'checkpoints', str(step))
                     os.makedirs(save_dir, exist_ok=True)
-                    save_model(
+                    save_kge_model(
                         kge_model,
                         optimizer, 
                         save_variable_list, 
@@ -557,11 +558,12 @@ def main(args):
                     )
 
                     # Track the best model (assuming higher is better for your metric; set maximize=False if lower is better)
-                    best_metric_value, best_model_path = update_best_model(
+                    best_metric_value, best_model_path = update_best_kge_model(
                         kge_model, optimizer, save_variable_list, args.save_path,
                         args.saving_metric, metrics[metric_token], 
                         best_metric_value, best_model_path,
-                        autoencoder_flag=args.autoencoder_flag, maximize=True
+                        autoencoder_flag=args.autoencoder_flag, maximize=True,
+                        logger=logging
                     )
         
         # Save the final model
@@ -572,8 +574,8 @@ def main(args):
                 'current_learning_rate': current_learning_rate,
                 'warm_up_steps': warm_up_steps
             }
-            save_configs(args)
-            save_model(
+            save_train_configs(args)
+            save_kge_model(
                 kge_model,
                 optimizer,
                 save_variable_list,
@@ -592,10 +594,10 @@ def main(args):
                     'current_learning_rate': current_learning_rate,
                     'warm_up_steps': warm_up_steps
                 }
-                save_configs(args)
+                save_train_configs(args)
                 save_dir = os.path.join(args.save_path, 'checkpoints', str(step))
                 os.makedirs(save_dir, exist_ok=True)
-                save_model(
+                save_kge_model(
                     kge_model,
                     optimizer, 
                     save_variable_list, 
@@ -603,11 +605,12 @@ def main(args):
                     args.autoencoder_flag
                 )
 
-                best_metric_value, best_model_path = update_best_model(
+                best_metric_value, best_model_path = update_best_kge_model(
                     kge_model, optimizer, save_variable_list, args.save_path,
                     args.saving_metric, metrics[metric_token], 
                     best_metric_value, best_model_path,
-                    autoencoder_flag=args.autoencoder_flag, maximize=True
+                    autoencoder_flag=args.autoencoder_flag, maximize=True,
+                    logger=logging
                 )
             
                 # load the best model for evaluation
