@@ -61,6 +61,7 @@ from multihopkg.logs import torch_module_logging
 # Reinforcement Learning
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
+from multihopkg.utils.saving import load_nav_supervised_checkpoint, save_nav_supervised_model
 
 # Knowledge Graph Embeddings
 from multihopkg.exogenous.sun_models import KGEModel
@@ -1191,8 +1192,11 @@ def train_nav_multihopkg(
                 best_metrics = valid_eval_metrics
                 best_metrics['epoch'] = epoch_id + 1
 
-                torch.save(nav_agent.state_dict(), nav_path)
-                torch.save(env.concat_projector.state_dict(), concat_projector_path)
+                save_nav_supervised_model(
+                    nav_agent=nav_agent,
+                    env=env,
+                    checkpoint_path=model_path,
+                )
 
             for key, value in valid_eval_metrics.items():
                 if wandb_on:
@@ -1206,12 +1210,12 @@ def train_nav_multihopkg(
             if key != 'epoch':
                 logger.info(f"Valid {key}: {value:.5f}")
         
-        # load the best model
-        nav_agent.load_state_dict(torch.load(nav_path))
-        if os.path.exists(concat_projector_path):
-            env.concat_projector.load_state_dict(torch.load(concat_projector_path))
-        else:
-            logger.warning(f"Concat projector model file not found at {concat_projector_path}. Continuing without loading it.")
+        load_nav_supervised_checkpoint(
+            nav_agent=nav_agent,
+            env=env,
+            checkpoint_path=model_path,
+            logger=logger
+        )
 
 def main():
     """
@@ -1438,26 +1442,14 @@ def main():
     # onnx_program.save("models/images/nav_agent.onnx")
     # ======================================
 
-    # TODO: Add checkpoint support
-    # See args.start_epoch
-
-    # TODO: Make it take check for a checkpoint and decide what start_epoch
-    # if args.checkpoint_path is not None:
-    #     # TODO: Add it here to load the checkpoint separetely
-    #     nav_agent.load_checkpoint(args.checkpoint_path)
-
     if os.path.exists(args.checkpoint_path):
         logger.info(f":: Checkpoint found, loading the model from {args.checkpoint_path}")
-        nav_agent_path = os.path.join(args.checkpoint_path, f'nav_model.pth')
-        concat_projector_path = os.path.join(args.checkpoint_path, f'concat_projector.pth')
-        if not os.path.exists(nav_agent_path):
-            raise RuntimeError(f"The provided checkpoint_path {nav_agent_path} does not exist. Please check the path.")
-        if not os.path.exists(concat_projector_path):
-            raise RuntimeError(f"The provided checkpoint_path {concat_projector_path} does not exist. Please check the path.")
-
-        logger.info(f"Loading the model from {args.checkpoint_path}")
-        nav_agent.load_state_dict(torch.load(nav_agent_path))
-        env.concat_projector.load_state_dict(torch.load(concat_projector_path))
+        load_nav_supervised_checkpoint(
+            nav_agent=nav_agent,
+            env=env,
+            checkpoint_path=args.checkpoint_path,
+            logger=logger
+        )
     else:
         logger.info(f":: No checkpoint found at {args.checkpoint_path}, training from scratch")
         args.save_path = f'./models/nav_sv/{timestamp}/'

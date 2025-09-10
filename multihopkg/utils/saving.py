@@ -7,6 +7,8 @@ import numpy as np
 import torch
 
 from multihopkg.exogenous.sun_models import KGEModel
+from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
+from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
 
 def save_train_configs(args: argparse.Namespace, save_path: str = None) -> None:
     '''
@@ -75,6 +77,19 @@ def save_kge_model(
             decoded_relation.detach().cpu().numpy()
         )
 
+def save_nav_supervised_model(
+    nav_agent: ContinuousPolicyGradient,
+    env: ITLGraphEnvironment,
+    checkpoint_path: str
+):
+    """
+    Save the navigation supervised model.
+    """
+    torch.save({
+        'nav_agent_state_dict': nav_agent.state_dict(),
+        'concat_projector_state_dict': env.concat_projector.state_dict()
+    }, os.path.join(checkpoint_path, 'nav_supervised_model.pth'))
+
 def update_best_kge_model(
         model: KGEModel,
         optimizer: torch.optim.Optimizer,
@@ -140,3 +155,33 @@ def load_selective_kge_embeddings(
     kge_model.load_state_dict(current_state, strict=False)
     if logger is not None:
         logger.info(f"Reloaded embeddings: {', '.join(reload_keys)} from {checkpoint_path}")
+
+def load_nav_supervised_checkpoint(
+        nav_agent: ContinuousPolicyGradient,
+        env: ITLGraphEnvironment,
+        checkpoint_path: str,
+        logger: logging.Logger = None
+    ) -> None:
+    """
+    Load navigation supervised learning checkpoint for nav_agent and concat_projector.
+    """
+    if not os.path.exists(checkpoint_path):
+        raise ValueError(f"Checkpoint path does not exist: {checkpoint_path}")
+
+    # nav_agent_path = os.path.join(checkpoint_path, 'nav_model.pth')
+    # concat_projector_path = os.path.join(checkpoint_path, 'concat_projector.pth')
+
+    # if not os.path.exists(nav_agent_path):
+    #     raise RuntimeError(f"The provided checkpoint_path {nav_agent_path} does not exist. Please check the path.")
+    # if not os.path.exists(concat_projector_path):
+    #     raise RuntimeError(f"The provided checkpoint_path {concat_projector_path} does not exist. Please check the path.")
+
+    # nav_agent.load_state_dict(torch.load(nav_agent_path))
+    # env.concat_projector.load_state_dict(torch.load(concat_projector_path))
+
+    checkpoint = torch.load(os.path.join(checkpoint_path, 'nav_supervised_model.pth'))
+    nav_agent.load_state_dict(checkpoint['nav_agent_state_dict'])
+    env.concat_projector.load_state_dict(checkpoint['concat_projector_state_dict'])
+
+    if logger is not None:
+        logger.info(f"Loaded navigation supervised checkpoint from {checkpoint_path}")
