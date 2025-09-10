@@ -24,6 +24,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--do_train', action='store_true', help='Enable training phase (default: False)')
     ap.add_argument('--do_test', action='store_true', help='Enable testing phase (default: False)')
     ap.add_argument('--do_valid', action='store_true', help='Enable validation phase (default: False)')
+    ap.add_argument('--checkpoint_path', type=str, default="", help='Path to model checkpoint to load (default: "")') # TODO: Implement loading from checkpoint.
 
     'Learning Hyperparameters'
     ap.add_argument('--learning_rate', type=float, default=0.00001, help='Learning rate for optimizer (default: 1e-5)')
