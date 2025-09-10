@@ -19,9 +19,10 @@ import debugpy
 
 from torch.utils.data import DataLoader
 
-from multihopkg.exogenous.sun_models import KGEModel, clean_up_checkpoints, clean_up_folder
+from multihopkg.exogenous.sun_models import KGEModel
 from multihopkg.utils.data_splitting import read_triple
 from multihopkg.utils.saving import save_train_configs, save_kge_model, update_best_kge_model
+from multihopkg.utils.cleaning import clean_up_checkpoints, clean_up_folder
 
 from multihopkg.utils.setup import set_seeds
 
@@ -623,9 +624,9 @@ def main(args):
                         logging.info('No best model found during training, using the final model for evaluation.')
 
             if getattr(args, 'clean_up', False):
-                clean_up_checkpoints(args.save_path)
+                clean_up_checkpoints(args.save_path, logger=logging)
             if getattr(args, 'clean_up_folder', False):
-                clean_up_folder(args.save_path, ignore_files_types=['.log', '.json']) # Remove empty folder or folder with only ignored files (.log)
+                clean_up_folder(args.save_path, ignore_files_types=['.log', '.json'], logger=logging) # Remove empty folder or folder with only ignored files (.log)
         
     if args.do_valid:
         logging.info('Evaluating on Valid Dataset...')

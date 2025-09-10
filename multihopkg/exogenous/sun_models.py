@@ -4,10 +4,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import os
-import json
-import shutil
-
 import logging
 from collections.abc import Mapping
 from typing import Any, Iterator, Union, List, Dict, Set
@@ -20,7 +16,7 @@ import torch.nn.functional as F
 
 from sklearn.metrics import average_precision_score
 
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
 from multihopkg.utils.convenience import sample_random_entity, get_embeddings_from_indices, calculate_entity_centroid, calculate_entity_range
 from multihopkg.emb.operations import normalize_angle_smooth, normalize_angle, angular_difference
@@ -1482,31 +1478,3 @@ class KGEModel(nn.Module):
         else:
             raise Warning("Invalid navigation starting type/point. Using centroid instead.")
             return self.centroid
-
-def clean_up_checkpoints(save_path: str) -> None:
-    checkpoints_dir = os.path.join(save_path, "checkpoints")
-    if os.path.exists(checkpoints_dir):
-        shutil.rmtree(checkpoints_dir)
-        logging.info(f"Checkpoints directory '{checkpoints_dir}' has been deleted.")
-
-def clean_up_folder(save_path: str, ignore_files_types: List[str]=['.log']) -> None:
-    """
-    Clean up the folder by removing all files and subdirectories.
-    """
-    # Check if folder is empty or if it contains only ignored files, if it does, erase it
-    if not os.path.exists(save_path):
-        print(f"Folder '{save_path}' does not exist. No action taken.")
-        return
-    
-    if not os.listdir(save_path):
-        # If folder exists but is empty, erase it
-        shutil.rmtree(save_path)
-        print(f"Folder '{save_path}' has been deleted because it was empty.")
-
-    # List all files and directories in the folder, if it contains only ignored files, erase it
-    files_and_dirs = os.listdir(save_path)
-    if all(
-        file.endswith(tuple(ignore_files_types)) for file in files_and_dirs
-    ):
-        shutil.rmtree(save_path)
-        print(f"Folder '{save_path}' has been deleted because it contained only ignored files: {ignore_files_types}.")
