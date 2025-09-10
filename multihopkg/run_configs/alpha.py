@@ -20,6 +20,11 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--preferred_config', type=str, default="configs/my_config.yaml", help="Path to YAML configuration file (default: configs/my_config.yaml). " \
                         "If not empty, overrides the respective command line arguments.")
 
+    # Add these lines here:
+    ap.add_argument('--do_train', action='store_true', help='Enable training phase (default: False)')
+    ap.add_argument('--do_test', action='store_true', help='Enable testing phase (default: False)')
+    ap.add_argument('--do_valid', action='store_true', help='Enable validation phase (default: False)')
+
     'Learning Hyperparameters'
     ap.add_argument('--learning_rate', type=float, default=0.00001, help='Learning rate for optimizer (default: 1e-5)')
     ap.add_argument('--beta', type=float, default=0.0, help='Entropy regularization coefficient (default: 0.0)') # TODO: Check if this is still used.
