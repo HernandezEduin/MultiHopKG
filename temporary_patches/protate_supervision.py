@@ -8,15 +8,14 @@ this makes endpoint-derived action labels highly variable even for the same
 relation.
 
 For pRotatE, use the pretrained relation phase itself as the semantic action
-label. During multi-hop warm-up, teacher-force the annotated gold tail into the
-next policy state. This separates two questions:
+label. Two multi-hop state variants are provided:
 
-* can the question-conditioned policy predict the correct relation rotation?
-* can pretrained pRotatE relation rotations compose perfectly in embedding
-  space?
-
-The latter is evaluated separately; it should not inject approximation error
-into the supervised labels/states.
+* ``multihop_supervision_relation_target`` keeps the original experiment's
+  gold-entity teacher forcing;
+* ``multihop_supervision_relation_target_continuous`` advances the state by
+  applying the gold relation action continuously in pRotatE space. This matches
+  inference-state geometry without compounding policy prediction errors during
+  supervised warm-up.
 """
 
 from __future__ import annotations
@@ -64,13 +63,38 @@ def _teacher_forced_state(
     return torch.cat([env.q_projected, gold_tail], dim=-1)
 
 
+def _continuous_relation_state(
+    env: ITLGraphEnvironment,
+    prev_position: torch.Tensor,
+    target_action: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Advance with the gold relation action and build the next policy state.
+
+    Unlike gold-entity teacher forcing, this preserves the continuous pRotatE
+    representative actually produced by relation composition. Unlike scheduled
+    sampling, it does not inject the policy's own prediction error into the
+    supervised state distribution.
+    """
+
+    next_position = env.knowledge_graph.flexible_forward(
+        prev_position, target_action
+    )
+    if env.add_transition_state:
+        state = torch.cat(
+            [env.q_projected, prev_position, target_action, next_position], dim=-1
+        )
+    else:
+        state = torch.cat([env.q_projected, next_position], dim=-1)
+    return state, next_position
+
+
 def _adapter_loss(
     env: ITLGraphEnvironment,
     adapter_out: torch.Tensor,
     source_ent: List[int],
     paths: torch.Tensor,
 ) -> torch.Tensor:
-    """Retain the base adapter objective for a controlled target ablation."""
+    """Retain the base adapter objective for controlled ablations."""
 
     head_emb = get_embeddings_from_indices(
         env.knowledge_graph.entity_embedding,
@@ -106,7 +130,7 @@ def single_hop_supervision_relation_target(
 ):
     """Supervise one-hop pRotatE navigation with the pretrained relation phase."""
 
-    del noise_scale  # Endpoint noise is intentionally not part of relation labels.
+    del noise_scale
     device = question_embeddings.device
     paths_t = torch.tensor(paths, dtype=torch.int, device=device)
 
@@ -143,9 +167,9 @@ def multihop_supervision_relation_target(
     expected_sigma: float = 0.03,
     noise_scale: float = 0.5,
 ):
-    """Supervise pRotatE relation actions while teacher-forcing gold path states."""
+    """Supervise relation actions while teacher-forcing annotated entity states."""
 
-    del noise_scale  # Relation labels are fixed by the pretrained KGE.
+    del noise_scale
     device = question_embeddings.device
     paths_t = torch.tensor(paths, dtype=torch.int, device=device)
 
@@ -178,9 +202,6 @@ def multihop_supervision_relation_target(
             sigma, torch.full_like(sigma, expected_sigma)
         )
 
-        # Follow the annotated path exactly during supervised warm-up. The
-        # policy is trained to predict relation rotations, while the next state
-        # remains the true intermediate entity supplied by the dataset.
         state = _teacher_forced_state(
             env,
             prev_position=current_position,
@@ -188,6 +209,56 @@ def multihop_supervision_relation_target(
             gold_tail=gold_tail,
         )
         current_position = gold_tail
+
+    adapter_loss = _adapter_loss(env, adapter_out, source_ent, paths_t)
+    return policy_loss + adapter_scalar * adapter_loss
+
+
+def multihop_supervision_relation_target_continuous(
+    nav_agent: ContinuousPolicyGradient,
+    env: ITLGraphEnvironment,
+    question_embeddings: torch.Tensor,
+    source_ent: List[int],
+    answer_id: List[int],
+    hops: int,
+    paths,
+    adapter_scalar: float = 0.5,
+    sigma_scalar: float = 0.1,
+    expected_sigma: float = 0.03,
+    noise_scale: float = 0.5,
+):
+    """Supervise relation actions on continuous gold-relation path states."""
+
+    del noise_scale
+    device = question_embeddings.device
+    paths_t = torch.tensor(paths, dtype=torch.int, device=device)
+
+    obs = env.reset(question_embeddings, answer_id, source_ent=source_ent, warmup=True)
+    state = obs.state
+    current_position = obs.kge_cur_pos
+    adapter_out = env.q_projected
+
+    policy_loss = torch.tensor(0.0, device=device)
+
+    for step in range(hops):
+        relation_embedding = get_embeddings_from_indices(
+            env.knowledge_graph.relation_embedding,
+            paths_t[:, step, 1],
+        )
+        target_action = relation_to_navigation_action(env, relation_embedding)
+        target_action = _expand_rollouts(env, target_action)
+
+        _, _, _, mu, sigma = nav_agent(state)
+        policy_loss = policy_loss + F.mse_loss(mu, target_action)
+        policy_loss = policy_loss + sigma_scalar * F.mse_loss(
+            sigma, torch.full_like(sigma, expected_sigma)
+        )
+
+        state, current_position = _continuous_relation_state(
+            env,
+            prev_position=current_position,
+            target_action=target_action,
+        )
 
     adapter_loss = _adapter_loss(env, adapter_out, source_ent, paths_t)
     return policy_loss + adapter_scalar * adapter_loss
