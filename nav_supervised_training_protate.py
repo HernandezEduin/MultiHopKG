@@ -1,8 +1,8 @@
 """Temporary entry point for supervised pRotatE navigation experiments.
 
 This file intentionally keeps ``nav_supervised_training.py`` unchanged. It
-installs the pRotatE navigation compatibility layer before any KGE instances
-are created, then relaxes the supervised-training dispatch so pRotatE can use
+installs the pRotatE navigation and policy compatibility layers before model
+construction, then relaxes the supervised-training dispatch so pRotatE can use
 the same single-hop and multi-hop supervision routines as TransE.
 
 Run this file with the same arguments/configuration normally supplied to
@@ -19,6 +19,7 @@ import nav_supervised_training as base
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
 from temporary_patches.protate_navigation import enable_protate_navigation_patches
+from temporary_patches.protate_policy import enable_protate_policy_patch
 
 
 def supervise_models_protate_compatible(
@@ -82,9 +83,10 @@ def supervise_models_protate_compatible(
 
 
 def install_temporary_patches() -> None:
-    """Install the pRotatE geometry patches and supervised dispatcher."""
+    """Install the pRotatE geometry, policy, and supervised dispatcher patches."""
 
     enable_protate_navigation_patches()
+    enable_protate_policy_patch()
     base.supervise_models = supervise_models_protate_compatible
 
 
