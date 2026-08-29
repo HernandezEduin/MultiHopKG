@@ -23,7 +23,7 @@ import json
 import math
 import os
 from collections import Counter
-from typing import Iterable, List, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -83,7 +83,21 @@ def load_model(args: argparse.Namespace) -> KGEModel:
     ).eval()
 
 
-def parse_paths(value) -> List[Tuple[int, int, int]]:
+def _resolve_id(value, mapping, component_name: str) -> int:
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+
+    value_str = str(value)
+    if value_str.lstrip("-").isdigit():
+        return int(value_str)
+    if value_str not in mapping:
+        raise KeyError(f"Unknown {component_name} in path triple: {value_str!r}")
+    return int(mapping[value_str])
+
+
+def parse_paths(value, ent2id, rel2id) -> List[Tuple[int, int, int]]:
     if isinstance(value, str):
         value = ast.literal_eval(value)
     if isinstance(value, np.ndarray):
@@ -97,7 +111,14 @@ def parse_paths(value) -> List[Tuple[int, int, int]]:
             triple = triple.tolist()
         if len(triple) != 3:
             raise ValueError(f"Expected path triple [h, r, t], got: {triple}")
-        triples.append(tuple(int(x) for x in triple))
+        head, relation, tail = triple
+        triples.append(
+            (
+                _resolve_id(head, ent2id, "head entity"),
+                _resolve_id(relation, rel2id, "relation"),
+                _resolve_id(tail, ent2id, "tail entity"),
+            )
+        )
     return triples
 
 
@@ -122,14 +143,13 @@ def entity_ranks(
         query_rad.unsqueeze(1), entity_rad.unsqueeze(0)
     )
     gold_distances = distances.gather(1, gold_tail_ids.reshape(-1, 1)).squeeze(1)
-    # Stable pessimistic rank: count all candidates strictly closer, then 1.
     ranks = (distances < (gold_distances.unsqueeze(1) - 1e-8)).sum(dim=1) + 1
     return ranks
 
 
 def summarize_ranks(name: str, ranks: Sequence[int]) -> dict:
     ranks_t = torch.tensor(list(ranks), dtype=torch.float32)
-    result = {
+    return {
         f"{name}_count": int(ranks_t.numel()),
         f"{name}_hits1": float((ranks_t <= 1).float().mean()),
         f"{name}_hits3": float((ranks_t <= 3).float().mean()),
@@ -137,7 +157,6 @@ def summarize_ranks(name: str, ranks: Sequence[int]) -> dict:
         f"{name}_mean_rank": float(ranks_t.mean()),
         f"{name}_mrr": float((1.0 / ranks_t).mean()),
     }
-    return result
 
 
 def compute_alias_stats(model: KGEModel, tolerance: float) -> dict:
@@ -183,7 +202,7 @@ def main() -> None:
     relation_embeddings = model.get_all_relations_embeddings_wo_dropout()
 
     for _, row in qa_df.iterrows():
-        paths = parse_paths(row["Paths"])
+        paths = parse_paths(row["Paths"], ent2id, rel2id)
         for head_id, relation_id, tail_id in paths:
             head = entity_embeddings[head_id].unsqueeze(0)
             tail = entity_embeddings[tail_id].unsqueeze(0)
