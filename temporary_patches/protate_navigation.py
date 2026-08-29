@@ -73,6 +73,25 @@ def flexible_forward_protate_navigation(
     return self.normalize_embedding(tail_rad)
 
 
+def absolute_difference_phase_navigation(
+    self: KGEModel,
+    head: torch.Tensor,
+    tail: torch.Tensor,
+) -> torch.Tensor:
+    """Return a pRotatE-compatible element-wise phase residual.
+
+    The pretrained pRotatE score uses ``abs(sin(h + r - t))``. Consequently,
+    phases separated by pi are equivalent under the model objective. Returning
+    ``abs(sin(delta))`` here preserves that same periodicity for intrinsic
+    navigation distance/reward calculations instead of using ordinary 2*pi
+    angular distance.
+    """
+
+    head_rad = self.denormalize_embedding(head)
+    tail_rad = self.denormalize_embedding(tail)
+    return torch.abs(torch.sin(head_rad - tail_rad))
+
+
 def protate_navigation_distance(
     target_rad: torch.Tensor,
     entity_rad: torch.Tensor,
@@ -105,7 +124,6 @@ def protate_ann_search(
         raise ValueError("topk must be at least 1")
 
     original_device = target_embeddings.device
-    original_shape = target_embeddings.shape
 
     if target_embeddings.dim() == 1:
         leading_shape = ()
@@ -161,9 +179,11 @@ def enable_protate_navigation_patches() -> None:
     """Install the temporary pRotatE navigation patches before model creation."""
 
     # Patch methods before KGEModel instances are created. KGEModel.__init__ stores
-    # bound methods in difference_func/flexible_func, so install these first.
+    # bound methods in difference_func/flexible_func/absolute_difference_func, so
+    # install these first.
     KGEModel.difference_phase = difference_phase_navigation
     KGEModel.flexible_forward_protate = flexible_forward_protate_navigation
+    KGEModel.absolute_difference_phase = absolute_difference_phase_navigation
 
     # The pRotatE ANN implementation previously returned two values while the
     # environment expected three and did not accept rollout-shaped tensors.
