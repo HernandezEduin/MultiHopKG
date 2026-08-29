@@ -126,6 +126,30 @@ class TestTemporaryPRotatENavigationPatch(unittest.TestCase):
         self.assertAlmostEqual(float(distance[1]), 0.0, places=5)
         self.assertAlmostEqual(float(distance[2]), 1.0, places=6)
 
+    def test_absolute_difference_matches_protate_pi_periodicity(self):
+        model = self.make_model(hidden_dim=1)
+        head = self.raw_from_radians(model, [[0.0]])
+        pi_equivalent = self.raw_from_radians(model, [[math.pi]])
+        quarter_turn = self.raw_from_radians(model, [[math.pi / 2]])
+
+        equivalent_distance = model.absolute_difference(head, pi_equivalent)
+        quarter_turn_distance = model.absolute_difference(head, quarter_turn)
+
+        self.assertTrue(
+            torch.allclose(
+                equivalent_distance,
+                torch.zeros_like(equivalent_distance),
+                atol=1e-5,
+            )
+        )
+        self.assertTrue(
+            torch.allclose(
+                quarter_turn_distance,
+                torch.ones_like(quarter_turn_distance),
+                atol=1e-6,
+            )
+        )
+
     def test_ann_search_returns_three_values_and_supports_rollouts(self):
         embedding_range = 2.0
         radians = torch.tensor(
