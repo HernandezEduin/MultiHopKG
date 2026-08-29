@@ -1,20 +1,7 @@
 """Real-data diagnostics for temporary pRotatE continuous-navigation patches.
 
 This script loads a trained pRotatE checkpoint plus a QA CSV containing path
-triples and answers questions about the geometry of the learned embedding space:
-
-1. Oracle reachability: if we compute the exact head->tail action with the
-   patched ``difference`` operator, does applying that action recover the gold
-   tail and rank it highly among entity embeddings?
-2. Relation reachability: if we use the pretrained pRotatE relation embedding
-   itself as a phase rotation, where does the resulting state rank the gold
-   tail?
-3. Policy squash reachability: if the supervised policy mean exactly matched a
-   target, what happens after the policy's second tanh is applied at rollout?
-4. Pi aliases: how many entity embeddings are effectively indistinguishable
-   from each other under pRotatE's abs(sin(delta)) geometry?
-
-The script does not train or modify model weights.
+triples and analyzes both isolated-hop and full-path navigation geometry.
 """
 
 from __future__ import annotations
@@ -25,7 +12,7 @@ import json
 import math
 import os
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
@@ -130,7 +117,9 @@ def parse_paths(value, ent2id, rel2id) -> List[Tuple[int, int, int]]:
     return triples
 
 
-def relation_to_navigation_action(model: KGEModel, relation_raw: torch.Tensor) -> torch.Tensor:
+def relation_to_navigation_action(
+    model: KGEModel, relation_raw: torch.Tensor
+) -> torch.Tensor:
     """Convert a raw learned pRotatE relation embedding to policy coordinates."""
     relation_rad = model.denormalize_embedding(relation_raw)
     relation_rad = torch.atan2(torch.sin(relation_rad), torch.cos(relation_rad))
@@ -142,7 +131,6 @@ def entity_ranks(
     query_raw: torch.Tensor,
     gold_tail_ids: torch.Tensor,
 ) -> torch.Tensor:
-    """Rank gold entities under pRotatE-compatible navigation geometry."""
     entity_raw = model.get_all_entity_embeddings_wo_dropout().detach().cpu().float()
     entity_rad = model.denormalize_embedding(entity_raw)
     query_rad = model.denormalize_embedding(query_raw.detach().cpu().float())
@@ -151,8 +139,7 @@ def entity_ranks(
         query_rad.unsqueeze(1), entity_rad.unsqueeze(0)
     )
     gold_distances = distances.gather(1, gold_tail_ids.reshape(-1, 1)).squeeze(1)
-    ranks = (distances < (gold_distances.unsqueeze(1) - 1e-8)).sum(dim=1) + 1
-    return ranks
+    return (distances < (gold_distances.unsqueeze(1) - 1e-8)).sum(dim=1) + 1
 
 
 def summarize_ranks(name: str, ranks: Sequence[int]) -> dict:
@@ -179,6 +166,56 @@ def summarize_action_magnitudes(name: str, actions: Sequence[torch.Tensor]) -> d
         ),
         "policy_double_tanh_max_deterministic_abs_action": deterministic_limit,
     }
+
+
+def compute_target_consistency(
+    oracle_actions_by_relation: dict,
+    relation_action_by_relation: dict,
+) -> dict:
+    """Compare MSE-space target spread with pRotatE-periodic target spread."""
+
+    per_relation_component_std = []
+    linear_sq_errors = []
+    periodic_errors = []
+    branch_equivalent_components = []
+
+    for relation_id, actions in oracle_actions_by_relation.items():
+        stacked = torch.cat(actions, dim=0).float()
+        if stacked.shape[0] > 1:
+            per_relation_component_std.append(stacked.std(dim=0, unbiased=False).mean())
+
+        relation_action = relation_action_by_relation[relation_id].float()
+        relation_action = relation_action.expand_as(stacked)
+        delta = stacked - relation_action
+        linear_sq_errors.append(delta.square().reshape(-1))
+
+        periodic = torch.abs(torch.sin(math.pi * delta))
+        periodic_errors.append(periodic.reshape(-1))
+
+        # Large disagreement in the linear action coordinates while the two
+        # rotations remain close under pRotatE's pi-periodic scoring geometry.
+        branch_equivalent_components.append(
+            ((delta.abs() > 0.75) & (periodic < 0.1)).reshape(-1)
+        )
+
+    all_linear_sq = torch.cat(linear_sq_errors)
+    all_periodic = torch.cat(periodic_errors)
+    all_branch_equivalent = torch.cat(branch_equivalent_components)
+
+    result = {
+        "oracle_target_vs_relation_linear_rmse": float(all_linear_sq.mean().sqrt()),
+        "oracle_target_vs_relation_mean_abs_sin_phase_error": float(
+            all_periodic.mean()
+        ),
+        "oracle_target_fraction_large_linear_but_periodically_close": float(
+            all_branch_equivalent.float().mean()
+        ),
+    }
+    if per_relation_component_std:
+        result["oracle_target_within_relation_mean_component_std"] = float(
+            torch.stack(per_relation_component_std).mean()
+        )
+    return result
 
 
 def compute_alias_stats(model: KGEModel, tolerance: float) -> dict:
@@ -218,8 +255,12 @@ def main() -> None:
     oracle_after_policy_squash_ranks = []
     relation_ranks = []
     relation_after_policy_squash_ranks = []
+    relation_path_ranks = []
+    relation_path_after_policy_squash_ranks = []
     oracle_actions = []
     relation_actions = []
+    oracle_actions_by_relation = defaultdict(list)
+    relation_action_by_relation = {}
     relation_vs_oracle_phase_error = []
     oracle_roundtrip_error = []
     hops_seen = 0
@@ -229,6 +270,35 @@ def main() -> None:
 
     for _, row in qa_df.iterrows():
         paths = parse_paths(row["Paths"], ent2id, rel2id)
+        if not paths:
+            continue
+
+        # Full-path relation composition from the actual question start entity.
+        relation_path_state = entity_embeddings[paths[0][0]].unsqueeze(0)
+        squashed_relation_path_state = relation_path_state.clone()
+        for _, relation_id, _ in paths:
+            relation = relation_embeddings[relation_id].unsqueeze(0)
+            relation_action = relation_to_navigation_action(model, relation)
+            relation_path_state = model.flexible_forward(
+                relation_path_state, relation_action
+            )
+            squashed_relation_path_state = model.flexible_forward(
+                squashed_relation_path_state, torch.tanh(relation_action)
+            )
+
+        final_tail_id = paths[-1][2]
+        final_gold_id = torch.tensor([final_tail_id], dtype=torch.long)
+        relation_path_ranks.append(
+            int(entity_ranks(model, relation_path_state, final_gold_id).item())
+        )
+        relation_path_after_policy_squash_ranks.append(
+            int(
+                entity_ranks(
+                    model, squashed_relation_path_state, final_gold_id
+                ).item()
+            )
+        )
+
         for head_id, relation_id, tail_id in paths:
             head = entity_embeddings[head_id].unsqueeze(0)
             tail = entity_embeddings[tail_id].unsqueeze(0)
@@ -237,14 +307,14 @@ def main() -> None:
 
             oracle_action = model.difference(head, tail)
             oracle_actions.append(oracle_action.detach().cpu())
+            oracle_actions_by_relation[relation_id].append(
+                oracle_action.detach().cpu()
+            )
             oracle_tail = model.flexible_forward(head, oracle_action)
-            oracle_rank = entity_ranks(model, oracle_tail, gold_tail_id).item()
-            oracle_ranks.append(int(oracle_rank))
+            oracle_ranks.append(
+                int(entity_ranks(model, oracle_tail, gold_tail_id).item())
+            )
 
-            # Current policy behavior with near-zero sigma: supervised loss makes
-            # mu approach target_action, then rollout applies actions=tanh(z),
-            # z approximately mu. Thus even perfect supervision executes
-            # tanh(target_action), not target_action.
             oracle_after_policy_squash = torch.tanh(oracle_action)
             squashed_oracle_tail = model.flexible_forward(
                 head, oracle_after_policy_squash
@@ -265,9 +335,11 @@ def main() -> None:
 
             relation_action = relation_to_navigation_action(model, relation)
             relation_actions.append(relation_action.detach().cpu())
+            relation_action_by_relation[relation_id] = relation_action.detach().cpu()
             relation_tail = model.flexible_forward(head, relation_action)
-            relation_rank = entity_ranks(model, relation_tail, gold_tail_id).item()
-            relation_ranks.append(int(relation_rank))
+            relation_ranks.append(
+                int(entity_ranks(model, relation_tail, gold_tail_id).item())
+            )
 
             relation_after_policy_squash = torch.tanh(relation_action)
             squashed_relation_tail = model.flexible_forward(
@@ -296,7 +368,15 @@ def main() -> None:
         **summarize_ranks(
             "relation_after_policy_double_tanh", relation_after_policy_squash_ranks
         ),
+        **summarize_ranks("relation_path", relation_path_ranks),
+        **summarize_ranks(
+            "relation_path_after_policy_double_tanh",
+            relation_path_after_policy_squash_ranks,
+        ),
         **summarize_action_magnitudes("relation_action", relation_actions),
+        **compute_target_consistency(
+            oracle_actions_by_relation, relation_action_by_relation
+        ),
         "oracle_roundtrip_max_phase_error": float(max(oracle_roundtrip_error)),
         "oracle_roundtrip_mean_max_phase_error": float(
             np.mean(oracle_roundtrip_error)
