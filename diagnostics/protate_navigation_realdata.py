@@ -9,7 +9,9 @@ triples and answers questions about the geometry of the learned embedding space:
 2. Relation reachability: if we use the pretrained pRotatE relation embedding
    itself as a phase rotation, where does the resulting state rank the gold
    tail?
-3. Pi aliases: how many entity embeddings are effectively indistinguishable
+3. Policy squash reachability: if the supervised policy mean exactly matched a
+   target, what happens after the policy's second tanh is applied at rollout?
+4. Pi aliases: how many entity embeddings are effectively indistinguishable
    from each other under pRotatE's abs(sin(delta)) geometry?
 
 The script does not train or modify model weights.
@@ -27,9 +29,6 @@ from collections import Counter
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
-# When this file is executed directly (``python diagnostics/...py``), Python
-# places ``diagnostics/`` rather than the repository root on sys.path. Add the
-# root explicitly so the local packages resolve without requiring PYTHONPATH.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -168,6 +167,20 @@ def summarize_ranks(name: str, ranks: Sequence[int]) -> dict:
     }
 
 
+def summarize_action_magnitudes(name: str, actions: Sequence[torch.Tensor]) -> dict:
+    values = torch.cat([action.reshape(-1) for action in actions]).abs().float()
+    deterministic_limit = math.tanh(1.0)
+    return {
+        f"{name}_mean_abs_component": float(values.mean()),
+        f"{name}_max_abs_component": float(values.max()),
+        f"{name}_fraction_abs_gt_0_5": float((values > 0.5).float().mean()),
+        f"{name}_fraction_abs_gt_tanh1": float(
+            (values > deterministic_limit).float().mean()
+        ),
+        "policy_double_tanh_max_deterministic_abs_action": deterministic_limit,
+    }
+
+
 def compute_alias_stats(model: KGEModel, tolerance: float) -> dict:
     entity_raw = model.get_all_entity_embeddings_wo_dropout().detach().cpu().float()
     entity_rad = model.denormalize_embedding(entity_raw)
@@ -202,7 +215,11 @@ def main() -> None:
         qa_df = qa_df.iloc[: args.max_questions]
 
     oracle_ranks = []
+    oracle_after_policy_squash_ranks = []
     relation_ranks = []
+    relation_after_policy_squash_ranks = []
+    oracle_actions = []
+    relation_actions = []
     relation_vs_oracle_phase_error = []
     oracle_roundtrip_error = []
     hops_seen = 0
@@ -216,13 +233,25 @@ def main() -> None:
             head = entity_embeddings[head_id].unsqueeze(0)
             tail = entity_embeddings[tail_id].unsqueeze(0)
             relation = relation_embeddings[relation_id].unsqueeze(0)
+            gold_tail_id = torch.tensor([tail_id], dtype=torch.long)
 
             oracle_action = model.difference(head, tail)
+            oracle_actions.append(oracle_action.detach().cpu())
             oracle_tail = model.flexible_forward(head, oracle_action)
-            oracle_rank = entity_ranks(
-                model, oracle_tail, torch.tensor([tail_id], dtype=torch.long)
-            ).item()
+            oracle_rank = entity_ranks(model, oracle_tail, gold_tail_id).item()
             oracle_ranks.append(int(oracle_rank))
+
+            # Current policy behavior with near-zero sigma: supervised loss makes
+            # mu approach target_action, then rollout applies actions=tanh(z),
+            # z approximately mu. Thus even perfect supervision executes
+            # tanh(target_action), not target_action.
+            oracle_after_policy_squash = torch.tanh(oracle_action)
+            squashed_oracle_tail = model.flexible_forward(
+                head, oracle_after_policy_squash
+            )
+            oracle_after_policy_squash_ranks.append(
+                int(entity_ranks(model, squashed_oracle_tail, gold_tail_id).item())
+            )
 
             oracle_tail_rad = model.denormalize_embedding(oracle_tail)
             tail_rad = model.denormalize_embedding(tail)
@@ -235,11 +264,18 @@ def main() -> None:
             oracle_roundtrip_error.append(float(roundtrip_residual.max()))
 
             relation_action = relation_to_navigation_action(model, relation)
+            relation_actions.append(relation_action.detach().cpu())
             relation_tail = model.flexible_forward(head, relation_action)
-            relation_rank = entity_ranks(
-                model, relation_tail, torch.tensor([tail_id], dtype=torch.long)
-            ).item()
+            relation_rank = entity_ranks(model, relation_tail, gold_tail_id).item()
             relation_ranks.append(int(relation_rank))
+
+            relation_after_policy_squash = torch.tanh(relation_action)
+            squashed_relation_tail = model.flexible_forward(
+                head, relation_after_policy_squash
+            )
+            relation_after_policy_squash_ranks.append(
+                int(entity_ranks(model, squashed_relation_tail, gold_tail_id).item())
+            )
 
             relation_rad = relation_action * math.pi
             oracle_rad = oracle_action * math.pi
@@ -252,7 +288,15 @@ def main() -> None:
         "hops_evaluated": hops_seen,
         "embedding_range": float(model.embedding_range.item()),
         **summarize_ranks("oracle", oracle_ranks),
+        **summarize_ranks(
+            "oracle_after_policy_double_tanh", oracle_after_policy_squash_ranks
+        ),
+        **summarize_action_magnitudes("oracle_action", oracle_actions),
         **summarize_ranks("relation", relation_ranks),
+        **summarize_ranks(
+            "relation_after_policy_double_tanh", relation_after_policy_squash_ranks
+        ),
+        **summarize_action_magnitudes("relation_action", relation_actions),
         "oracle_roundtrip_max_phase_error": float(max(oracle_roundtrip_error)),
         "oracle_roundtrip_mean_max_phase_error": float(
             np.mean(oracle_roundtrip_error)
