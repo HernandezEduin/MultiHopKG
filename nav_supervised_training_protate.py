@@ -2,8 +2,8 @@
 
 This file intentionally keeps ``nav_supervised_training.py`` unchanged. It
 installs the pRotatE navigation and policy compatibility layers before model
-construction, then relaxes the supervised-training dispatch so pRotatE can use
-the same single-hop and multi-hop supervision routines as TransE.
+construction, then dispatches supervised warm-up to pRotatE-specific relation
+phase targets with gold-state teacher forcing.
 
 Run this file with the same arguments/configuration normally supplied to
 ``nav_supervised_training.py``.
@@ -20,6 +20,10 @@ from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
 from temporary_patches.protate_navigation import enable_protate_navigation_patches
 from temporary_patches.protate_policy import enable_protate_policy_patch
+from temporary_patches.protate_supervision import (
+    multihop_supervision_relation_target,
+    single_hop_supervision_relation_target,
+)
 
 
 def supervise_models_protate_compatible(
@@ -36,7 +40,7 @@ def supervise_models_protate_compatible(
     expected_sigma: float = 0.03,
     noise_scale: float = 0.5,
 ):
-    """Dispatch supervised navigation for TransE and temporary pRotatE support."""
+    """Dispatch pRotatE warm-up to relation-target supervision."""
 
     if hops is not None:
         assert all(
@@ -47,14 +51,13 @@ def supervise_models_protate_compatible(
         ), "All Hops values must be equal to the first value in hops"
         assert paths is not None, "Paths should be provided when hops are specified."
 
-    supported_models = {"TransE", "pRotatE"}
-    assert env.knowledge_graph.model_name in supported_models, (
-        f"Unsupported KGE model: {env.knowledge_graph.model_name}. "
-        f"Temporary supervised navigation supports: {sorted(supported_models)}"
+    assert env.knowledge_graph.model_name == "pRotatE", (
+        f"This temporary entry point expects pRotatE, got "
+        f"{env.knowledge_graph.model_name}."
     )
 
     if hops is None or all(h == 1 for h in hops):
-        return base.single_hop_supervision(
+        return single_hop_supervision_relation_target(
             nav_agent=nav_agent,
             env=env,
             question_embeddings=question_embeddings,
@@ -67,7 +70,7 @@ def supervise_models_protate_compatible(
             noise_scale=noise_scale,
         )
 
-    return base.multihop_supervision(
+    return multihop_supervision_relation_target(
         nav_agent=nav_agent,
         env=env,
         question_embeddings=question_embeddings,
@@ -83,7 +86,7 @@ def supervise_models_protate_compatible(
 
 
 def install_temporary_patches() -> None:
-    """Install the pRotatE geometry, policy, and supervised dispatcher patches."""
+    """Install pRotatE geometry, policy, and relation-target supervision."""
 
     enable_protate_navigation_patches()
     enable_protate_policy_patch()
