@@ -22,8 +22,17 @@ import ast
 import json
 import math
 import os
+import sys
 from collections import Counter
+from pathlib import Path
 from typing import List, Sequence, Tuple
+
+# When this file is executed directly (``python diagnostics/...py``), Python
+# places ``diagnostics/`` rather than the repository root on sys.path. Add the
+# root explicitly so the local packages resolve without requiring PYTHONPATH.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 import pandas as pd
