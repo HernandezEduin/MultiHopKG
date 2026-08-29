@@ -1,187 +1,218 @@
-"""
-LG: A place holder for the data preparation script
+"""Dataset preparation entry point for MultiHopKG.
 
-Explanation:
-    I dont like all this being muddled in the main script.
-    So, we ended up with a router for different data operations. 
-    But, still we can run all preprocessing in one go with the `all` function.
+The current MultiHopKGQA workflow for Kinship and MQuAKE-ST lives here rather
+than in a separate preprocessing script.  The underlying implementation is the
+canonical ``multihopkg.data_utils`` API.
 """
+
+from __future__ import annotations
+
 import argparse
+import logging
 import os
-from multihopkg import data_utils 
-from transformers import AutoTokenizer, AutoModel
+from typing import Callable, Dict
+
+from multihopkg import data_utils
 from multihopkg.logging import setup_logger
 from multihopkg.utils.setup import get_git_root
-from torch import nn
-import pdb
 
-def process_traditional_kb_data(data_dir:str, test:bool, model:str, add_reverse_relations: bool):
-    # NOTE: Their code here
-    raw_kb_path = os.path.join(data_dir, 'raw.kb')
-    train_path = data_utils.get_train_path(data_dir, test,model)
-    dev_path = os.path.join(data_dir, 'dev.triples')
-    test_path = os.path.join(data_dir, 'test.triples')
-    data_utils.prepare_kb_envrioment(raw_kb_path, train_path, dev_path, test_path, test, add_reverse_relations)
+
+logger = logging.getLogger(__name__)
+
+
+def process_traditional_kb_data(
+    data_dir: str,
+    test: bool,
+    model: str,
+    add_reverse_relations: bool,
+) -> None:
+    """Run the historical KB-environment preparation path."""
+    raw_kb_path = os.path.join(data_dir, "raw.kb")
+    train_path = data_utils.get_train_path(data_dir, test, model)
+    dev_path = os.path.join(data_dir, "dev.triples")
+    test_path = os.path.join(data_dir, "test.triples")
+    data_utils.prepare_kb_envrioment(
+        raw_kb_path,
+        train_path,
+        dev_path,
+        test_path,
+        test,
+        add_reverse_relations,
+    )
 
 
 def process_qa_data(
-    raw_data_path: str,
-    cache_data_dir: str,
-    cached_triples_basename: str,
-    text_tokenizer: str,
-    aggregate_question_embeddings: bool,
-):
-    # Load the Transformers Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(text_tokenizer)
-    # Load the data
+    data_dir: str,
+    raw_qa_path: str,
+    cache_path: str,
+    question_tokenizer: str,
+    seed: int = 42,
+    force_recompute: bool = False,
+    override_split: bool = True,
+) -> None:
+    """Preprocess current Kinship/MQuAKE-ST MultiHopKGQA data.
+
+    ``data_utils.load_dictionaries`` automatically creates missing
+    ``entity2id.txt`` / ``relation2id.txt`` files from ``triplets.txt`` or,
+    when it is absent, from ``train.txt`` + ``dev.txt`` + ``test.txt``.
+    """
+    id2entity, entity2id, id2relation, relation2id = data_utils.load_dictionaries(
+        data_dir
+    )
     logger.info(
-        "Loading the data with parameters:\n"
-        f"---> raw_data_dir: {raw_data_path}\n"
-        f"---> cache_data_dir: {cache_data_dir}\n"
-        f"---> text_tokenizer: {text_tokenizer}\n"
+        "Loaded dictionaries: %d entities, %d relations",
+        len(id2entity),
+        len(id2relation),
     )
 
-    # TODO: (Only when necessary) Fix this since we have change the function elsewhere
-    df_split, metadata = data_utils.process_qa_data(
-        raw_data_path,
-        cache_data_dir,
-        tokenizer,
+    train_df, dev_df, test_df, metadata = data_utils.load_qa_data(
+        cached_metadata_path=cache_path,
+        raw_QAData_path=raw_qa_path,
+        question_tokenizer_name=question_tokenizer,
+        answer_tokenizer_name=None,
+        entity2id=entity2id,
+        relation2id=relation2id,
+        logger=logger,
+        force_recompute=force_recompute,
+        override_split=override_split,
+        supervised=True,
+        seed=seed,
     )
 
-    train_path, dev_path, test_path = metadata["saved_paths"]
-    # Prepare the triplet dictionaries
-    data_utils.prepare_triple_dicts(df_split)
-
-    logger.info(f"Done. Result dumped at : \n\033[93m\033[4m{metadata['saved_path']}\033[0m")
-
-
-
-def all_arguments(valid_operations: list) -> argparse.Namespace:
-
-    ap = argparse.ArgumentParser()
-    #-----------------
-    # Common Arguments
-    #-----------------
-    ap.add_argument(
-        "--logging_level",
-        type=str,
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="logging level (default: INFO)",
+    logger.info("MultiHopKGQA preprocessing succeeded")
+    logger.info("Schema: %s", metadata.get("schema", "legacy"))
+    logger.info("Multi-answer: %s", metadata.get("is_multi_answer", False))
+    logger.info(
+        "Train/dev/test: %d/%d/%d", len(train_df), len(dev_df), len(test_df)
     )
+    logger.info("Columns: %s", list(train_df.columns))
+    logger.info("Cached splits: %s", metadata["saved_paths"])
 
-    # Rather than __file__ in case we move the script (and clarity)
+    if len(train_df):
+        logger.info("Example processed training row: %s", train_df.iloc[0].to_dict())
+
+
+def all_arguments(valid_operations: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Prepare MultiHopKG datasets")
     repo_root = get_git_root()
     assert repo_root is not None, "Could not find the root of the git repository"
 
-    #----------------------------
-    # process_traditional_kb_data
-    #----------------------------
-    ap.add_argument(
-        "--data_dir",
-        type=str,
-        default=os.path.join(repo_root, "data"),
-        help="directory where the knowledge graph data is stored (default: None)",
-    )
-    ap.add_argument(
-        "--test",
-        action="store_true",
-        help="perform inference on the test set (default: False)",
-    )
-    ap.add_argument(
-        "--add_reverse_relations",
-        action="store_true",
-        help="add reverse relations to KB (default: False)",
-    )
-
-    #----------------
-    # process_qa_data
-    #----------------
-    # NOTE: we use __file__ as a proxy for repo root
-    ap.add_argument(
-        "--raw_QAPathData_path",
-        type=str,
-        default=os.path.join(repo_root, "data/itl/multihop_ds_datasets_FbWiki_TriviaQA.csv"),
-        help="Directory where the knowledge graph data is stored (default: None)",
-    )
-    ap.add_argument(
-        "--cached_QAPathData_path",
-        type=str,
-        default=os.path.join(repo_root, ".cache/itl/{}_triples-tok_{}-maxpathlen_{}.parquet"),
-        help="Directory where the knowledge graph data is stored (default: None)",
-    )
-    ap.add_argument(
-        "--cached_triples_basename",
-        type=str,
-        default=os.path.join(repo_root, "itl_data-tok_{}-maxpathlen_{}.parquet"),
-        help="Name given to triples data",
-    )
-    ap.add_argument(
-        "--text_tokenizer",
-        type=str,
-        default="bert-base-uncased",
-        help="Directory where the knowledge graph data is stored (default: None)",
-    )
-    ap.add_argument(
-        "--aggregate_question_embeddings",
-        action="store_true",
-        help="aggregate question embeddings so it is represented as a singel vector (default: False)",
-    )
-
-
-    #----------------------------------
-    # For choosing operaiton to perform
-    #----------------------------------
-    ap.add_argument(
+    parser.add_argument(
         "--operation",
-        type=str,
         required=True,
         choices=valid_operations,
-        help="operation to perform",
+        help="Preparation operation to perform",
+    )
+    parser.add_argument(
+        "--logging_level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
     )
 
-    args = ap.parse_args()
+    # Common dataset directory. For MultiHopKGQA this is where graph triples and
+    # entity/relation dictionaries live.
+    parser.add_argument(
+        "--data_dir",
+        default=os.path.join(repo_root, "data"),
+        help="Dataset directory containing graph data",
+    )
 
-    #---------------------
-    # Some Sanity Checking
-    #---------------------
-    os.makedirs(os.path.dirname(args.cached_QAPathData_path), exist_ok=True)
+    # Current MultiHopKGQA QA preprocessing arguments.
+    parser.add_argument(
+        "--raw_qa",
+        "--raw_QAPathData_path",
+        dest="raw_qa",
+        default=None,
+        help="Raw MultiHopKGQA CSV (Kinship or MQuAKE-ST)",
+    )
+    parser.add_argument(
+        "--cache",
+        "--cached_QAPathData_path",
+        dest="cache",
+        default=None,
+        help="QA preprocessing metadata JSON cache path",
+    )
+    parser.add_argument(
+        "--question_tokenizer",
+        "--text_tokenizer",
+        dest="question_tokenizer",
+        default="bert-base-uncased",
+    )
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--force_recompute", action="store_true")
+    parser.add_argument(
+        "--ignore_split_labels",
+        action="store_true",
+        help="Ignore dataset SplitLabel values and generate splits automatically",
+    )
+
+    # Historical KB preparation arguments.
+    parser.add_argument("--test", action="store_true")
+    parser.add_argument("--model", default="point")
+    parser.add_argument("--add_reverse_relations", action="store_true")
+
+    args = parser.parse_args()
+
+    if args.operation in {"process_qa_data", "all"}:
+        if not args.raw_qa:
+            parser.error("--raw_qa is required for process_qa_data/all")
+        if not args.cache:
+            parser.error("--cache is required for process_qa_data/all")
+        cache_dir = os.path.dirname(args.cache)
+        if cache_dir:
+            os.makedirs(cache_dir, exist_ok=True)
 
     return args
 
-def main(args: argparse.Namespace, valid_operations: dict):
 
-    args = all_arguments(list(valid_operations.keys()))
+def run_operation(args: argparse.Namespace) -> None:
+    if args.operation == "process_traditional_kb_data":
+        process_traditional_kb_data(
+            args.data_dir, args.test, args.model, args.add_reverse_relations
+        )
+        return
 
-    if args.operation not in valid_operations:
-        raise ValueError("Invalid operation: {}".format(args.operation))
+    if args.operation == "process_qa_data":
+        process_qa_data(
+            data_dir=args.data_dir,
+            raw_qa_path=args.raw_qa,
+            cache_path=args.cache,
+            question_tokenizer=args.question_tokenizer,
+            seed=args.seed,
+            force_recompute=args.force_recompute,
+            override_split=not args.ignore_split_labels,
+        )
+        return
 
-    # Switch on the operation
-    operation = valid_operations[args.operation]
-    if args.operation == "process_data":
-        operation(args.data_dir, args.test, args.model, args.add_reverse_relations)
-    elif args.operation == "process_qa_data":
-        operation(args.raw_QAPathData_path, args.cached_QAPathData_path, args.cached_triples_basename, args.text_tokenizer, args.aggregate_question_embeddings)
-    else:
-        raise NotImplementedError
+    if args.operation == "all":
+        process_traditional_kb_data(
+            args.data_dir, args.test, args.model, args.add_reverse_relations
+        )
+        process_qa_data(
+            data_dir=args.data_dir,
+            raw_qa_path=args.raw_qa,
+            cache_path=args.cache,
+            question_tokenizer=args.question_tokenizer,
+            seed=args.seed,
+            force_recompute=args.force_recompute,
+            override_split=not args.ignore_split_labels,
+        )
+        return
 
-def all(args: argparse.Namespace):
-    # First prepare the traditinal KB data
-    process_traditional_kb_data(args.data_dir, args.test, args.model, args.add_reverse_relations)
-    # Then prepare the QA data
-    process_qa_data(args.raw_QAPathData_path, args.cached_QAPathData_path, args.text_tokenizer, args.aggregate_question_embeddings, args.cached_triples_basename)
+    raise ValueError(f"Invalid operation: {args.operation}")
 
-if __name__ == "__main__":
-    adadaddadad = {
-        "process_traditional_kb_data": process_traditional_kb_data,
-        "process_qa_data": process_qa_data,
-    }
-    # Want to aboid these to be global
-    xdaodijadoj = all_arguments(list(adadaddadad.keys()))
+
+def main() -> None:
+    valid_operations = ["process_traditional_kb_data", "process_qa_data", "all"]
+    args = all_arguments(valid_operations)
+
+    global logger
     logger = setup_logger(
         logger_name=os.path.basename(__file__).replace(".py", ""),
-        logging_level=xdaodijadoj.logging_level,
+        logging_level=args.logging_level,
     )
+    run_operation(args)
 
 
-    main(args=xdaodijadoj, valid_operations=adadaddadad)
+if __name__ == "__main__":
+    main()
