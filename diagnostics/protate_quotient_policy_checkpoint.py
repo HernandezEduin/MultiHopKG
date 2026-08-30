@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import torch
 
+import sys
+from pathlib import Path
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import diagnostics.protate_policy_checkpoint as base
 from temporary_patches.protate_navigation import enable_protate_navigation_patches
 from temporary_patches.protate_policy import enable_protate_policy_patch
@@ -12,6 +18,7 @@ from temporary_patches.protate_quotient import (
     enable_protate_quotient_navigation_patch,
     relation_to_quotient_action,
 )
+
 
 
 def _teacher_forced_state_quotient(
