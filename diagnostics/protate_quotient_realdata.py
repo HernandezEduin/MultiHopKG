@@ -1,15 +1,8 @@
-"""Validate pRotatE quotient-space action and state canonicalization on real data.
+"""Validate pRotatE quotient-space action/state canonicalization on real data.
 
 pRotatE scores with ``abs(sin(delta))``, so phases that differ by pi are
-indistinguishable to the KGE. A policy that consumes raw phase representatives,
-however, does not inherit that invariance automatically.
-
-This diagnostic checks a quotient representation in which:
-
-* relation actions are canonicalized modulo pi into [-0.5, 0.5] policy coords;
-* entity states are canonicalized modulo pi before being compared as policy
-  inputs;
-* underlying KGE transitions and entity retrieval remain unchanged.
+indistinguishable to the KGE. This diagnostic compares standard and canonical
+relation actions and can evaluate the full QA CSV or an exact SplitLabel subset.
 """
 
 from __future__ import annotations
@@ -17,12 +10,11 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
+from pathlib import Path
 
 import pandas as pd
 import torch
-
-import sys
-from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -46,6 +38,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qa_path", required=True)
     parser.add_argument("--gamma", type=float, default=None)
     parser.add_argument("--max_questions", type=int, default=None)
+    parser.add_argument(
+        "--split",
+        choices=("all", "train", "dev", "test"),
+        default="all",
+        help="Evaluate only this SplitLabel subset. Default: all rows.",
+    )
     return parser.parse_args()
 
 
@@ -83,8 +81,21 @@ def main() -> None:
 
     _, ent2id, _, rel2id = data_utils.load_dictionaries(args.data_dir)
     qa_df = pd.read_csv(args.qa_path)
+
+    if args.split != "all":
+        if "SplitLabel" not in qa_df.columns:
+            raise ValueError(
+                f"--split={args.split} requested, but {args.qa_path} has no SplitLabel column"
+            )
+        qa_df = qa_df[qa_df["SplitLabel"].astype(str) == args.split].reset_index(
+            drop=True
+        )
+
     if args.max_questions is not None:
         qa_df = qa_df.iloc[: args.max_questions]
+
+    if len(qa_df) == 0:
+        raise ValueError(f"No QA rows selected for split={args.split!r}")
 
     entity_embeddings = model.get_all_entity_embeddings_wo_dropout()
     relation_embeddings = model.get_all_relations_embeddings_wo_dropout()
@@ -96,11 +107,13 @@ def main() -> None:
     standard_path_ranks = []
     canonical_path_ranks = []
     canonical_state_disagreement = []
+    processed_questions = 0
 
     for _, row in qa_df.iterrows():
         paths = parse_paths(row["Paths"], ent2id, rel2id)
         if not paths:
             continue
+        processed_questions += 1
 
         standard_state = entity_embeddings[paths[0][0]].unsqueeze(0)
         canonical_state = standard_state.clone()
@@ -141,8 +154,13 @@ def main() -> None:
             int(entity_ranks(model, canonical_state, final_tail_id).item())
         )
 
+    if processed_questions == 0:
+        raise ValueError("No valid paths were processed")
+
     result = {
-        "questions": int(len(qa_df)),
+        "split": args.split,
+        "selected_rows": int(len(qa_df)),
+        "questions": int(processed_questions),
         **summarize_magnitudes("standard_relation_action", standard_actions),
         **summarize_magnitudes("canonical_relation_action", canonical_actions),
         **summarize_ranks("standard_relation_hop", standard_hop_ranks),
